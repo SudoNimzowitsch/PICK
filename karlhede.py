@@ -768,6 +768,141 @@ def compute_psid_direct(C: dict, G: dict, frame_vecs: list,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# General covariant derivative infrastructure
+# ─────────────────────────────────────────────────────────────────────────────
+
+def covariant_derivative(T: dict, G: dict, coords: list, n: int,
+                         simp_fn=None) -> dict:
+    """
+    Compute the covariant derivative of a totally covariant tensor T.
+
+    T is a sparse dict keyed by r-tuples of coordinate indices.
+    G is the Christoffel symbol dict: G[s,mu,nu] = Gamma^s_{mu nu}.
+    Returns a sparse dict keyed by (r+1)-tuples, with the new derivative
+    index appended last.
+
+    Formula for rank-r tensor T:
+        (nabla_e T)_{a1...ar} = d/dx^e T_{a1...ar}
+                              - sum_i Gamma^f_{e,ai} T_{a1...f...ar}
+
+    This is the standard covariant derivative formula valid in any
+    coordinate basis.  By iterating this function, we obtain nabla^n C
+    for any n without any external dependencies.
+    """
+    # Determine rank from first key
+    if not T:
+        return {}
+    rank = len(next(iter(T)))
+
+    result = {}
+    for indices, val in T.items():
+        for e in range(n):
+            # Partial derivative term
+            nc = diff(val, coords[e])
+            # Christoffel correction: one term per covariant index
+            for i, ai in enumerate(indices):
+                for rho in range(n):
+                    g_coeff = G.get((rho, e, ai), sp.S.Zero)
+                    if g_coeff == 0:
+                        continue
+                    # Replace index i with rho in the index tuple
+                    new_idx = indices[:i] + (rho,) + indices[i+1:]
+                    nc -= g_coeff * T.get(new_idx, sp.S.Zero)
+            if nc != 0:
+                nc = _simp(nc, simp_fn)
+            if nc != 0:
+                new_key = indices + (e,)
+                if new_key in result:
+                    result[new_key] = _simp(result[new_key] + nc, simp_fn)
+                else:
+                    result[new_key] = nc
+
+    # Remove any zeros that accumulated from cancellation
+    return {k: v for k, v in result.items() if v != 0}
+
+
+def project_psid(nabla_n_C: dict, frame_vecs: list, n: int,
+                 simp_fn=None) -> list:
+    """
+    Project nabla^order C onto the null frame to get PSID components.
+
+    nabla_n_C is a sparse dict keyed by (4+order)-tuples, as returned
+    by iterating covariant_derivative() starting from C (rank 4).
+
+    Returns a list of (k, e_dirs, value) where:
+      k       : Psi index 0..4
+      e_dirs  : tuple of frame direction indices for the derivative legs
+                (integer at order=1 for backward compat with isotropy test)
+      value   : projected scalar (SymPy expression)
+
+    The projection is:
+        Psi_k^(n)[e1,...,en] = (nabla_e1...nabla_en C)_{abcd}
+                               * v1^a v2^b v3^c v4^d
+                               * ve1^{e1} ... ven^{en}
+    """
+    import itertools as _it
+
+    if not nabla_n_C:
+        return []
+
+    # Determine order from tensor rank
+    rank = len(next(iter(nabla_n_C)))
+    order = rank - 4
+
+    comps = []
+    for k, (l1, l2, l3, l4) in _PSI_LEGS.items():
+        v1 = frame_vecs[l1]
+        v2 = frame_vecs[l2]
+        v3 = frame_vecs[l3]
+        v4 = frame_vecs[l4]
+        nz1 = [i for i in range(n) if v1[i] != 0]
+        nz2 = [i for i in range(n) if v2[i] != 0]
+        nz3 = [i for i in range(n) if v3[i] != 0]
+        nz4 = [i for i in range(n) if v4[i] != 0]
+
+        # Iterate over all combinations of frame directions for derivative legs
+        if order == 1:
+            dir_iter = range(4)
+        else:
+            dir_iter = _it.product(range(4), repeat=order)
+
+        for e_dirs in dir_iter:
+            if order == 1:
+                e_vecs = [frame_vecs[e_dirs]]
+                dir_label = e_dirs  # integer, backward compatible
+            else:
+                e_vecs = [frame_vecs[ed] for ed in e_dirs]
+                dir_label = e_dirs
+
+            nze_list = [[i for i in range(n) if ev[i] != 0]
+                        for ev in e_vecs]
+
+            total = sp.S.Zero
+            for a in nz1:
+                for b in nz2:
+                    for c in nz3:
+                        for d in nz4:
+                            outer = v1[a]*v2[b]*v3[c]*v4[d]
+                            if outer == 0:
+                                continue
+                            for eps_combo in _it.product(*nze_list):
+                                ev_factors = sp.S.One
+                                for ev, eps in zip(e_vecs, eps_combo):
+                                    ev_factors *= ev[eps]
+                                if ev_factors == 0:
+                                    continue
+                                key = (a, b, c, d) + eps_combo
+                                val = nabla_n_C.get(key, sp.S.Zero)
+                                if val != 0:
+                                    total += val * outer * ev_factors
+
+            total = _simp(sp.cancel(total), simp_fn)
+            comps.append((k, dir_label, total))
+
+    return comps
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Functional independence (Jacobian rank, unchanged in principle)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -775,32 +910,70 @@ def indep_count(scalars: list, coords: list, simp_fn=None) -> int:
     """
     Number of functionally independent real scalars = rank of Jacobian.
     Implements CLASSI's FUNTST (funtst.shp) via SymPy Matrix.rank().
+
+    For metrics with undetermined functions (FUNS/NEWSUL case), any
+    applied functions F(x) and their derivatives F'(x), F''(x) etc.
+    are substituted with fresh positive symbols before all simplification.
+    This prevents sp.cancel from hanging on expressions like p**(m**2)*G(p).
     """
     if not scalars:
         return 0
+
+    # Build FUNS substitution map upfront from all scalars
+    from sympy.core.function import AppliedUndef
+    funs_subs = {}
+    extra_coords = []
+    all_atoms = set()
+    for s in scalars:
+        try:
+            all_atoms |= s.atoms(sp.Derivative, sp.Function)
+        except Exception:
+            pass
+    for atom in sorted(all_atoms, key=str):
+        if atom in funs_subs:
+            continue
+        if isinstance(atom, sp.Derivative):
+            sym = sp.Symbol(f'_fd{len(funs_subs)}', positive=True)
+            funs_subs[atom] = sym
+            extra_coords.append(sym)
+        elif isinstance(atom, AppliedUndef):
+            sym = sp.Symbol(f'_ff{len(funs_subs)}', positive=True)
+            funs_subs[atom] = sym
+            extra_coords.append(sym)
+
+    def _sub(expr):
+        return expr.subs(funs_subs) if funs_subs else expr
+
+    all_coords = list(coords) + extra_coords
+
+    # Extract real/imag parts after substitution
     real_scalars = []
     for s in scalars:
-        r = _simp(sp.re(s), simp_fn)
-        i_part = _simp(sp.im(s), simp_fn)
+        s2 = _sub(s)
+        r = sp.cancel(sp.re(s2))
+        i_part = sp.cancel(sp.im(s2))
         if r != 0: real_scalars.append(r)
         if i_part != 0: real_scalars.append(i_part)
     if not real_scalars:
         return 0
 
-    # Deduplicate (up to sign) to reduce Jacobian size
+    # Deduplicate using sp.cancel (safe after FUNS substitution)
     seen, unique = [], []
     for s in real_scalars:
-        if not any(_simp(s-u, simp_fn) == 0 or _simp(s+u, simp_fn) == 0
-                   for u in seen):
-            seen.append(s); unique.append(s)
+        if not any(sp.cancel(s - u) == 0 or sp.cancel(s + u) == 0 for u in seen):
+            seen.append(s)
+            unique.append(s)
 
-    J = Matrix([[diff(s, c) for c in coords] for s in unique])
+    J = Matrix([[diff(s, c) for c in all_coords] for s in unique])
+    cancel_zero = lambda x: sp.cancel(x) == 0
     try:
-        Js = J.applyfunc(lambda x: _simp(x, simp_fn))
-        return Js.rank()
+        Js = J.applyfunc(sp.cancel)
+        return Js.rank(iszerofunc=cancel_zero, simplify=sp.cancel)
     except Exception:
-        return J.rank()
-
+        try:
+            return J.rank(iszerofunc=cancel_zero, simplify=sp.cancel)
+        except Exception:
+            return J.rank()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Signature detection and coframe construction (unchanged)
@@ -923,6 +1096,10 @@ def _signed_sqrt(gaa, simp_fn=None):
     Compute sqrt of a diagonal metric component, handling sign correctly.
     For Lorentzian metrics where SymPy can't determine sign symbolically,
     uses a numeric test to determine whether to negate before sqrt.
+
+    Handles metrics with undetermined functions G(p), d(u), etc. by
+    substituting positive dummy values for all applied functions in the
+    numeric sign test, avoiding Abs() in the output.
     """
     gaa_s = _simp(gaa, simp_fn)
     # Try direct sign determination
@@ -942,11 +1119,21 @@ def _signed_sqrt(gaa, simp_fn=None):
             return sqrt(gaa_s)
     except Exception:
         pass
-    # Numeric fallback: substitute free symbols with typical values
+    # Numeric fallback: substitute free symbols AND unknown functions
+    # with positive test values.  This handles metrics containing
+    # undetermined functions like G(p), d(u), f(r) etc.
     try:
-        free = list(gaa_s.free_symbols)
-        test_subs = {sym: sp.Rational(3,1) if 'r' in str(sym)
-                     else sp.Rational(1,2) for sym in free}
+        from sympy.core.function import AppliedUndef
+        test_subs = {}
+        # Substitute coordinate symbols
+        for sym in gaa_s.free_symbols:
+            test_subs[sym] = sp.Rational(3, 1) if 'r' in str(sym)                              else sp.Rational(1, 2)
+        # Substitute applied functions (G(p), d(u), etc.) with 1
+        for atom in gaa_s.atoms(sp.Function):
+            if isinstance(atom, (sp.Derivative,)):
+                test_subs[atom] = sp.Rational(1, 2)
+            elif isinstance(atom, AppliedUndef) or not hasattr(atom, 'is_number'):
+                test_subs[atom] = sp.S.One
         num = float(gaa_s.subs(test_subs).evalf())
         return sqrt(-gaa_s) if num < 0 else sqrt(gaa_s)
     except Exception:
@@ -1213,25 +1400,14 @@ class KarlhedeClassifier:
         # correct nabla^n C via nab(nab(...C...)) instead of the coordinate-
         # partial stopgap.  Otherwise fall back to compute_psid_direct
         # (order 1 correct) + coordinate partials (orders >= 2, stopgap).
-        sg = self.sage_geometry
 
         log("\n  Computing frame-projected nablaC (PSID)...")
 
-        # Always use compute_psid_direct for order=1 — this uses the
-        # hand-rolled C and G already computed above, avoiding any
-        # SageManifolds/Maxima calls at this stage.
-        # sage_geometry is only used at order>=2 via nabla_weyl().
-        psid_comps_1 = compute_psid_direct(C, G, frame_vecs, coords, n, simp)
+        # ── Covariant derivative iteration (pure SymPy) ──────────────
+        # Uses covariant_derivative() iteratively: T = C, nabla(C),
+        # nabla^2(C), ... No SageManifolds dependency.
 
         def _extract_scalars(comps):
-            """Extract scalar invariants from PSID components.
-
-            Uses v² (with powsimp force=True to rationalize sqrt products)
-            rather than v directly.  This is essential: PSID components
-            contain square roots from the tetrad construction, and
-            indep_count's Jacobian rank test requires rational expressions.
-            v² = v*conj(v) is real and rational for all standard metrics.
-            """
             import sympy as _sp
             scalars = []
             for item in comps:
@@ -1243,7 +1419,9 @@ class KarlhedeClassifier:
                     scalars.append(v2)
             return scalars
 
-        psid_scalars_1 = _extract_scalars(psid_comps_1)
+        log("\n  Computing nabla^n C iteratively (pure SymPy)...")
+        nabla_T = C  # updated each order
+        psid_comps_1 = None  # saved for isotropy test
 
         # ── Karlhede iteration ─────────────────────────────────────────
         prev_t   = t0
@@ -1255,18 +1433,14 @@ class KarlhedeClassifier:
         for order in range(1, self.max_order + 1):
             log(f"\n  Order {order}...")
 
+            # One more covariant differentiation
+            nabla_T = covariant_derivative(nabla_T, G, coords, n, simp)
+            psid_comps = project_psid(nabla_T, frame_vecs, n, simp)
             if order == 1:
-                new_scalars = psid_scalars_1
-                test_psid_isotropy(psid_comps_1, iso, simp)
+                psid_comps_1 = psid_comps
+            new_scalars = _extract_scalars(psid_comps)
+            test_psid_isotropy(psid_comps_1, iso, simp)
 
-            elif sg is not None:
-                # SageManifolds: correct nabla^n C for n >= 2.
-                # nabla_weyl() temporarily switches to SymPy calculus engine
-                # to avoid Maxima simplify_rational() hangs.
-                log(f"    Using SageManifolds nabla^{order}C...")
-                psid_comps_n = sg.psid_components(frame_vecs, order=order)
-                new_scalars = _extract_scalars(psid_comps_n)
-                test_psid_isotropy(psid_comps_1, iso, simp)
 
 
             combined  = current_scalars + new_scalars
