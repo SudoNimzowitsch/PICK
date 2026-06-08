@@ -775,70 +775,32 @@ def indep_count(scalars: list, coords: list, simp_fn=None) -> int:
     """
     Number of functionally independent real scalars = rank of Jacobian.
     Implements CLASSI's FUNTST (funtst.shp) via SymPy Matrix.rank().
-
-    For metrics with undetermined functions (FUNS/NEWSUL case), any
-    applied functions F(x) and their derivatives F'(x), F''(x) etc.
-    are substituted with fresh positive symbols before all simplification.
-    This prevents sp.cancel from hanging on expressions like p**(m**2)*G(p).
     """
     if not scalars:
         return 0
-
-    # Build FUNS substitution map upfront from all scalars
-    from sympy.core.function import AppliedUndef
-    funs_subs = {}
-    extra_coords = []
-    all_atoms = set()
-    for s in scalars:
-        try:
-            all_atoms |= s.atoms(sp.Derivative, sp.Function)
-        except Exception:
-            pass
-    for atom in sorted(all_atoms, key=str):
-        if atom in funs_subs:
-            continue
-        if isinstance(atom, sp.Derivative):
-            sym = sp.Symbol(f'_fd{len(funs_subs)}', positive=True)
-            funs_subs[atom] = sym
-            extra_coords.append(sym)
-        elif isinstance(atom, AppliedUndef):
-            sym = sp.Symbol(f'_ff{len(funs_subs)}', positive=True)
-            funs_subs[atom] = sym
-            extra_coords.append(sym)
-
-    def _sub(expr):
-        return expr.subs(funs_subs) if funs_subs else expr
-
-    all_coords = list(coords) + extra_coords
-
-    # Extract real/imag parts after substitution
     real_scalars = []
     for s in scalars:
-        s2 = _sub(s)
-        r = sp.cancel(sp.re(s2))
-        i_part = sp.cancel(sp.im(s2))
+        r = _simp(sp.re(s), simp_fn)
+        i_part = _simp(sp.im(s), simp_fn)
         if r != 0: real_scalars.append(r)
         if i_part != 0: real_scalars.append(i_part)
     if not real_scalars:
         return 0
 
-    # Deduplicate using sp.cancel (safe after FUNS substitution)
+    # Deduplicate (up to sign) to reduce Jacobian size
     seen, unique = [], []
     for s in real_scalars:
-        if not any(sp.cancel(s - u) == 0 or sp.cancel(s + u) == 0 for u in seen):
-            seen.append(s)
-            unique.append(s)
+        if not any(_simp(s-u, simp_fn) == 0 or _simp(s+u, simp_fn) == 0
+                   for u in seen):
+            seen.append(s); unique.append(s)
 
-    J = Matrix([[diff(s, c) for c in all_coords] for s in unique])
-    cancel_zero = lambda x: sp.cancel(x) == 0
+    J = Matrix([[diff(s, c) for c in coords] for s in unique])
     try:
-        Js = J.applyfunc(sp.cancel)
-        return Js.rank(iszerofunc=cancel_zero, simplify=sp.cancel)
+        Js = J.applyfunc(lambda x: _simp(x, simp_fn))
+        return Js.rank()
     except Exception:
-        try:
-            return J.rank(iszerofunc=cancel_zero, simplify=sp.cancel)
-        except Exception:
-            return J.rank()
+        return J.rank()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Signature detection and coframe construction (unchanged)
@@ -961,10 +923,6 @@ def _signed_sqrt(gaa, simp_fn=None):
     Compute sqrt of a diagonal metric component, handling sign correctly.
     For Lorentzian metrics where SymPy can't determine sign symbolically,
     uses a numeric test to determine whether to negate before sqrt.
-
-    Handles metrics with undetermined functions G(p), d(u), etc. by
-    substituting positive dummy values for all applied functions in the
-    numeric sign test, avoiding Abs() in the output.
     """
     gaa_s = _simp(gaa, simp_fn)
     # Try direct sign determination
@@ -984,21 +942,11 @@ def _signed_sqrt(gaa, simp_fn=None):
             return sqrt(gaa_s)
     except Exception:
         pass
-    # Numeric fallback: substitute free symbols AND unknown functions
-    # with positive test values.  This handles metrics containing
-    # undetermined functions like G(p), d(u), f(r) etc.
+    # Numeric fallback: substitute free symbols with typical values
     try:
-        from sympy.core.function import AppliedUndef
-        test_subs = {}
-        # Substitute coordinate symbols
-        for sym in gaa_s.free_symbols:
-            test_subs[sym] = sp.Rational(3, 1) if 'r' in str(sym)                              else sp.Rational(1, 2)
-        # Substitute applied functions (G(p), d(u), etc.) with 1
-        for atom in gaa_s.atoms(sp.Function):
-            if isinstance(atom, (sp.Derivative,)):
-                test_subs[atom] = sp.Rational(1, 2)
-            elif isinstance(atom, AppliedUndef) or not hasattr(atom, 'is_number'):
-                test_subs[atom] = sp.S.One
+        free = list(gaa_s.free_symbols)
+        test_subs = {sym: sp.Rational(3,1) if 'r' in str(sym)
+                     else sp.Rational(1,2) for sym in free}
         num = float(gaa_s.subs(test_subs).evalf())
         return sqrt(-gaa_s) if num < 0 else sqrt(gaa_s)
     except Exception:
