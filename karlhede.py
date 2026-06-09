@@ -1217,7 +1217,7 @@ class KarlhedeClassifier:
                  null_coframe=None, orthonormal_coframe=None,
                  contravariant=False, signature=None, tetrad_type='auto',
                  simplify_fn=None, max_order=7, verbose=True,
-                 sage_geometry=None):
+):
         self.g                   = metric
         self.coords              = coords
         self.null_coframe        = null_coframe
@@ -1229,7 +1229,6 @@ class KarlhedeClassifier:
         self.max_order           = max_order
         self.verbose             = verbose
         self.n                   = len(coords)
-        self.sage_geometry       = sage_geometry  # SageGeometry or None
 
     def _log(self, msg):
         if self.verbose: print(msg)

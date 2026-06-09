@@ -53,10 +53,7 @@ Usage
 
     # Either way, feed into the existing classifier:
     from pick.karlhede import KarlhedeClassifier
-    clf = KarlhedeClassifier(
-        sg.g_matrix, sg.coords,
-        _sage_geometry=sg,   # NEW optional kwarg — enables nabla_weyl()
-    )
+    clf = KarlhedeClassifier(sg.g_matrix, sg.coords)
 
 Compatibility guarantee
 -----------------------
