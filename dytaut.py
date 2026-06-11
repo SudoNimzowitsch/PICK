@@ -172,15 +172,265 @@ def standardise(PSI: list, coframe: list, petrov_type: str, simp_fn=None):
     """
     Entry point: bring an arbitrary null tetrad to standard form.
 
-    Currently implements type D fully.  For unimplemented types the coframe
-    is returned unchanged (graceful degradation — the classifier continues but
-    the isotropy/isometry result may be wrong if the frame isn't already
-    standard).
+    Implements type D fully; types N, III, II partially (PND alignment only,
+    no boost/spin normalisation); type I and 0 return unchanged.
 
     Returns standardised coframe as list of lists.
     """
     if petrov_type == 'D':
         cf, _ = dygend(PSI, coframe, simp_fn)
         return cf
-    # Types I, II, III, N, 0: not yet implemented — return unchanged
+    if petrov_type == 'N':
+        cf, _ = dygenn(PSI, coframe, simp_fn)
+        return cf
+    if petrov_type == '3':
+        cf, _ = dygen3(PSI, coframe, simp_fn)
+        return cf
+    if petrov_type == '2':
+        cf, _ = dygen2(PSI, coframe, simp_fn)
+        return cf
+    if petrov_type == '1':
+        cf, _ = dygen1(PSI, coframe, simp_fn)
+        return cf
+    # Type 0: conformally flat, handled via χ path (not yet implemented)
     return [list(v) for v in coframe]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# General quartic root finder (all Petrov types)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def quartic_roots(PSI: list, simp_fn=None) -> list:
+    """
+    Find roots of Ψ(z) = Ψ₀ + 4Ψ₁z + 6Ψ₂z² + 4Ψ₃z³ + Ψ₄z⁴ with multiplicities.
+
+    Returns list of (root, multiplicity) pairs, including (S.Infinity, mult)
+    for the root at ∞ when Ψ₄=0.
+
+    Uses sympy.roots for exact symbolic factoring.
+    """
+    s = lambda x: _simp(x, simp_fn)
+    P0, P1, P2, P3, P4 = [s(p) for p in PSI]
+    z = sp.Symbol('_z_roots')
+
+    results = []
+
+    # Root at ∞ has multiplicity = 4 - degree of quartic
+    # i.e. if Ψ₄=0 then leading coefficient vanishes
+    degree = 4
+    if P4 == 0:
+        degree -= 1
+    if P4 == 0 and P3 == 0:
+        degree -= 1
+    if P4 == 0 and P3 == 0 and P2 == 0:
+        degree -= 1
+    if P4 == 0 and P3 == 0 and P2 == 0 and P1 == 0:
+        degree -= 1
+    inf_mult = 4 - degree
+    if inf_mult > 0:
+        results.append((S.Infinity, inf_mult))
+
+    if degree == 0:
+        return results  # all roots at ∞
+
+    # Build the polynomial of correct degree
+    poly = P0
+    if degree >= 1: poly = poly + 4*P1*z
+    if degree >= 2: poly = poly + 6*P2*z**2
+    if degree >= 3: poly = poly + 4*P3*z**3
+    if degree >= 4: poly = poly + P4*z**4
+
+    try:
+        roots_dict = sp.roots(poly, z)
+        for r, mult in roots_dict.items():
+            results.append((s(r), mult))
+    except Exception:
+        try:
+            solns = sp.solve(poly, z)
+            seen = {}
+            for r in solns:
+                r = s(r)
+                seen[r] = seen.get(r, 0) + 1
+            for r, mult in seen.items():
+                results.append((r, mult))
+        except Exception:
+            pass
+
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Type-N standardiser (DYGENN)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def dygenn(PSI: list, coframe: list, simp_fn=None):
+    """
+    Bring a type-N null tetrad to canonical form (only Ψ₀≠0, path '10000').
+
+    Type N has one 4-fold PND. Standard form has it aligned to the n direction
+    (z=∞), giving Ψ₀≠0 only.
+
+    Root action:
+      null_rotation_l(E): z → z/(1−Ez), sends finite root r → ∞ when E=1/r.
+    """
+    from .reduction_tests import null_rotation_l as _nl
+
+    s = lambda x: _simp(x, simp_fn)
+    path = petrov_path(PSI, simp_fn)
+
+    if path == '10000':
+        return [list(v) for v in coframe], PSI
+
+    cf = [list(v) for v in coframe]
+    roots = quartic_roots(PSI, simp_fn)
+
+    # Find the 4-fold root
+    r4 = None
+    for r, mult in roots:
+        if mult == 4:
+            r4 = r
+            break
+    if r4 is None:
+        # Fallback: take the root with highest multiplicity
+        roots_sorted = sorted(roots, key=lambda x: -x[1])
+        r4 = roots_sorted[0][0]
+
+    if r4 == S.Infinity:
+        # Already at ∞ — just needs normalisation (skipped for now)
+        pass
+    else:
+        # nl(E) sends ∞ → -1/E. To send r4 → ∞: set -1/E = r4 → E = -1/r4.
+        E = s(-S.One / r4)
+        cf = _nl(cf, E, simp_fn)
+
+    return cf, PSI
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Type-III standardiser (DYGEN3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def dygen3(PSI: list, coframe: list, simp_fn=None):
+    """
+    Bring a type-III null tetrad to canonical form (only Ψ₁≠0, path '01000').
+
+    Type III has one 3-fold PND and one simple PND. Standard form:
+      - 3-fold PND at z=∞ (n direction)
+      - simple PND at z=0 (l direction)
+    giving Ψ₁≠0 only.
+
+    Strategy:
+      1. Find 3-fold root r3 and simple root r1.
+      2. null_rotation_l(1/r3): r3 → ∞.
+      3. The simple root shifts to r1' = r1/(1 − r1/r3).
+      4. null_rotation_n(r1'): r1' → 0.
+    """
+    from .reduction_tests import null_rotation_l as _nl, null_rotation_n as _nn
+
+    s = lambda x: _simp(x, simp_fn)
+    path = petrov_path(PSI, simp_fn)
+
+    if path == '01000':
+        return [list(v) for v in coframe], PSI
+
+    cf = [list(v) for v in coframe]
+    roots = quartic_roots(PSI, simp_fn)
+
+    r3 = None  # 3-fold root
+    r1 = None  # simple root
+    for r, mult in roots:
+        if mult == 3:
+            r3 = r
+        elif mult == 1:
+            r1 = r
+
+    # Step 1: send 3-fold root to ∞
+    # nl(E) sends: 0→0, inf→-1/E, r→r/(1-rE).
+    # To send r3→inf: need -1/E = r3 → E = -1/r3.
+    if r3 is not None and r3 != S.Infinity:
+        E3 = s(-S.One / r3)
+        cf = _nl(cf, E3, simp_fn)
+        # Update r1 under nl(E3): r1 → r1/(1-r1*E3)
+        if r1 is not None and r1 != S.Infinity:
+            r1 = s(r1 / (1 - r1 * E3))
+        elif r1 == S.Infinity:
+            r1 = s(-S.One / E3)  # inf → -1/E3 = r3
+    elif r3 == S.Infinity:
+        # 3-fold root already at ∞
+        pass
+
+    # Step 2: send simple root to 0
+    # nn(E) sends: inf→inf, 0→-E. To send r1→0: need -E=r1 → E=-r1... 
+    # Wait: nn(E) sends 0→-E and inf→inf. Empirically: nn(E) shifts roots by -E.
+    # So nn(E) maps r → r-E. To map r1→0: set E=r1.
+    # But WAIT: nn(E) shifts the quartic roots: root at r_old → r_old - E.
+    # So to send r1→0: apply nn(r1) (shifts everything by -r1, so r1→0). YES.
+    if r1 is not None and r1 != S.Zero and r1 != S.Infinity:
+        cf = _nn(cf, r1, simp_fn)
+
+    return cf, PSI
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Type-II standardiser (DYGEN2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def dygen2(PSI: list, coframe: list, simp_fn=None):
+    """
+    Bring a type-II null tetrad to canonical form (Ψ₂,Ψ₃,Ψ₄≠0, path '00111').
+
+    Type II has one 2-fold PND and two simple PNDs. Standard form:
+      - double PND at z=0 (l direction), giving Ψ₀=Ψ₁=0.
+
+    Strategy:
+      1. Find double root r2.
+      2. null_rotation_n(r2): r2 → 0.
+    """
+    from .reduction_tests import null_rotation_n as _nn
+
+    s = lambda x: _simp(x, simp_fn)
+    path = petrov_path(PSI, simp_fn)
+
+    # Standard forms for type II have double PND at z=0: Ψ₀=Ψ₁=0
+    # Check if already in standard form (first two components zero)
+    P0 = _simp(PSI[0], simp_fn)
+    P1 = _simp(PSI[1], simp_fn)
+    if P0 == 0 and P1 == 0:
+        return [list(v) for v in coframe], PSI
+
+    cf = [list(v) for v in coframe]
+    roots = quartic_roots(PSI, simp_fn)
+
+    r2 = None  # double root
+    for r, mult in roots:
+        if mult == 2:
+            r2 = r
+            break
+
+    # nn(E) shifts all finite roots by -E. To send r2→0: apply nn(r2).
+    if r2 is not None and r2 != S.Zero and r2 != S.Infinity:
+        cf = _nn(cf, r2, simp_fn)
+    elif r2 == S.Infinity:
+        # Double root at ∞. nl(E) sends inf → -1/E.
+        # To send inf to 0: not directly possible with single nl.
+        # Would need nl then nn. For now skip (graceful degradation).
+        pass
+
+    return cf, PSI
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Type-I standardiser (DYGEN1) — placeholder
+# ─────────────────────────────────────────────────────────────────────────────
+
+def dygen1(PSI: list, coframe: list, simp_fn=None):
+    """
+    Bring a type-I null tetrad to canonical form (Ψ₀=Ψ₄, Ψ₂≠0, path '10101').
+
+    Type I has four distinct PNDs. Standard form has Ψ₁=Ψ₃=0 and Ψ₀=Ψ₄.
+
+    TODO: implement full type-I standardisation.
+    Currently returns coframe unchanged (graceful degradation).
+    """
+    # Not yet implemented — return unchanged
+    return [list(v) for v in coframe], PSI
