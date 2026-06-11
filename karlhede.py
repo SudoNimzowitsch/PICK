@@ -448,14 +448,19 @@ def test_psid_isotropy(psid_comps: list, flags: IsotropyFlags,
             flags.boostiso = False
         if sw != 0:
             flags.rotiso = False
-        # Null rotation: a nonzero component that is NOT at the "lower-right
-        # corner" of the spinor (which would preserve null rotations) breaks
-        # null rotation isotropy.  In GHP: null rotations preserve Ψ₄ and
-        # break it for other Ψ_k.  For the derivative spinor DPSI (valence
-        # (5,1)→(6 symmetric)), the effective "lower-right" corner maps to
-        # the (k=5, d=3) component.  A simple check: if boost_wt+spin_wt<0
-        # and nonzero → null rotation direction is engaged.
-        if bw + sw < 0 or (bw < 0 and sw == 0) or (bw == 0 and sw < 0):
+        # Null rotations ('n' group of the type-N standard frame, path
+        # 10000, Ψ₀ only): the residual rotations shift l,
+        #     l' = l + Ē·m + E·m̄ + |E|²·n,    m' = m + E·n,
+        # so every non-corner slot mixes INTO the all-l corner component
+        # (∇_l…∇_l Ψ₀, the unique maximal-boost-weight slot).  The frame
+        # component list is invariant under the full 2-parameter group iff
+        # ONLY the corner is nonzero.  Empirically pinned (2026-06-11):
+        # wavez has only (k=0,d=0) at orders 1-2 → H=nnn survives;
+        # wavezk also has (k=0,d=2)=∇_mΨ₀ → C'₀₀ = C₀₀ + Ē·C₀₂ ≠ C₀₀ →
+        # H=n000.  A possible 1-dim remnant for special component
+        # alignments is not implemented (CLASSI reports none for the
+        # ptest type-N metrics); both flags are dropped together.
+        if not (k == 0 and d == 0):
             if flags.nullrotiso:
                 flags.nullrotiso = False
                 flags.null1drotiso = False
@@ -974,6 +979,109 @@ def project_psid(nabla_n_C: dict, frame_vecs: list, n: int,
 # Functional independence (Jacobian rank, unchanged in principle)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SUL mechanism (CLASSI NEWSUL/USESUL): user-supplied rewrite rules
+# ─────────────────────────────────────────────────────────────────────────────
+
+def apply_suls(expr, suls, max_iter: int = 12):
+    """
+    Apply substitution rules (CLASSI SULs) to an expression, with
+    derivative prolongation, iterated to a fixpoint.
+
+    `suls` is a list of (lhs, rhs) SymPy pairs.  Two kinds of rules:
+
+    1. Algebraic (e.g. M**2 -> Q - M, cos(t)**2 -> 1 - sin(t)**2):
+       handled by SymPy subs, which performs power matching (M**4 ->
+       (Q-M)**2, M**3 -> M*(Q-M)).
+
+    2. Derivative rules (e.g. Derivative(H(u,z,zb), z, zb) -> 0, the
+       field equation of a Kundt wave): a rule for D_α f must also
+       reduce every higher derivative D_β f whose variable multiset
+       dominates α.  Prolongation: D_β f = D_{β-α}(D_α f) ->
+       Derivative(rhs, β-α).doit().
+
+    Rules are applied repeatedly until the expression stops changing
+    (rhs may reintroduce reducible subexpressions, e.g. M**2 -> Q - M
+    applied to M**4).  CLASSI scopes SULs to specific tensors via
+    USESUL; PICK applies them globally per metric, which is a
+    semantically safe superset for rules that are identities of the
+    geometry (field equations, trig identities, definitional
+    substitutions).
+    """
+    if not suls:
+        return expr
+    from collections import Counter
+
+    def _apply_pow_rule(e, base, k, rhs):
+        """Replace base**m (integer m >= k) by rhs**(m//k) * base**(m%k).
+        Plain subs is NOT used for Pow rules because SymPy's power
+        matching also rewrites the bare base (M -> sqrt(Q-M)), nesting
+        radicals on repeated application."""
+        def _match(x):
+            return (x.is_Pow and x.base == base
+                    and x.exp.is_Integer and x.exp >= k)
+        def _repl(x):
+            q, r = divmod(int(x.exp), k)
+            return rhs**q * base**r
+        return e.replace(_match, _repl)
+
+    e = sp.sympify(expr)
+    for _ in range(max_iter):
+        e0 = e
+        # 1. Algebraic substitution
+        for lhs, rhs in suls:
+            try:
+                if lhs.is_Pow and lhs.exp.is_Integer and lhs.exp > 1:
+                    e = _apply_pow_rule(e, lhs.base, int(lhs.exp), rhs)
+                elif not isinstance(lhs, sp.Derivative):
+                    e = e.subs(lhs, rhs)
+                else:
+                    e = e.subs(lhs, rhs)   # exact derivative match
+            except Exception:
+                pass
+        # 2. Derivative prolongation: reduce dominating derivatives
+        dsubs = {}
+        try:
+            datoms = e.atoms(sp.Derivative)
+        except Exception:
+            datoms = set()
+        for d in datoms:
+            for lhs, rhs in suls:
+                if not isinstance(lhs, sp.Derivative):
+                    continue
+                if d.expr != lhs.expr:
+                    continue
+                cd = Counter()
+                for v, k in d.variable_count:
+                    cd[v] += int(k)
+                cl = Counter()
+                for v, k in lhs.variable_count:
+                    cl[v] += int(k)
+                if cd == cl:
+                    continue  # exact match: handled by subs above
+                if all(cd[v] >= k for v, k in cl.items()):
+                    extra = []
+                    for v in cd:
+                        extra += [v] * (cd[v] - cl.get(v, 0))
+                    try:
+                        dsubs[d] = sp.diff(rhs, *extra)   # evaluates immediately
+                    except Exception:
+                        pass
+                    break
+        if dsubs:
+            e = e.subs(list(dsubs.items()))
+        # SymPy's subs on Derivative atoms performs nested-derivative
+        # substitution, leaving unevaluated forms like Derivative(0, z)
+        # or Derivative(-G_xx, y); doit() collapses them.
+        try:
+            e = e.doit()
+        except Exception:
+            pass
+        if e == e0:
+            break
+    return e
+
+
 def _generic_rank(J: Matrix, samples: int = 3, seed: int = 20260611) -> int:
     """
     Generic rank of a symbolic matrix, via exact substitution of random
@@ -1035,7 +1143,7 @@ def _generic_rank(J: Matrix, samples: int = 3, seed: int = 20260611) -> int:
         return J.rank()
 
 
-def indep_count(scalars: list, coords: list, simp_fn=None) -> int:
+def indep_count(scalars: list, coords: list, simp_fn=None, suls=None) -> int:
     """
     t = number of functionally independent real scalars among `scalars`
       = generic rank of the Jacobian  ∂(scalars)/∂(coords).
@@ -1071,6 +1179,13 @@ def indep_count(scalars: list, coords: list, simp_fn=None) -> int:
         s = sp.sympify(s)
         rows.append([diff(s, c) for c in coords])
     J = Matrix(rows)
+
+    # Apply SUL rewrite rules to the Jacobian entries BEFORE freshening:
+    # the chain rule creates new derivatives (e.g. d/dz̄ of an H_zz term
+    # gives H_zzz̄) which the rules may reduce; without this, constrained
+    # derivatives would be freshened as generic and the rank overcounted.
+    if suls:
+        J = J.applyfunc(lambda e: apply_suls(e, suls))
 
     # 2. Freshen function atoms inside the Jacobian entries.
     #    Subs wrappers first (most composite), then Derivatives (highest
@@ -1470,9 +1585,11 @@ class KarlhedeClassifier:
                  null_coframe=None, orthonormal_coframe=None,
                  contravariant=False, signature=None, tetrad_type='auto',
                  simplify_fn=None, max_order=7, verbose=True,
+                 suls=None,
 ):
         self.g                   = metric
         self.coords              = coords
+        self.suls                = suls or []
         self.null_coframe        = null_coframe
         self.orthonormal_coframe = orthonormal_coframe
         self.contravariant       = contravariant
@@ -1487,6 +1604,8 @@ class KarlhedeClassifier:
         if self.verbose: print(msg)
 
     def _s(self, expr):
+        if self.suls:
+            expr = apply_suls(expr, self.suls)
         return _simp(expr, self.simp)
 
     def classify(self) -> KarlhedeResult:
@@ -1692,7 +1811,7 @@ class KarlhedeClassifier:
             if r_p != 0: scalars_0.append(r_p)
             if i_p != 0: scalars_0.append(i_p)
 
-        t0 = indep_count(scalars_0, coords, simp)
+        t0 = indep_count(scalars_0, coords, simp, suls=self.suls)
         log(f"           t={t0} independent scalars")
 
         steps = [KarlhedeStep(0, t0, H0_dim, iso.name, H0_sym)]
@@ -1765,7 +1884,7 @@ class KarlhedeClassifier:
 
 
             combined  = current_scalars + new_scalars
-            t_new     = indep_count(combined, coords, simp)
+            t_new     = indep_count(combined, coords, simp, suls=self.suls)
             H_new_dim = iso.dim
             H_new_sym = iso.symbol
 
