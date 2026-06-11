@@ -974,74 +974,162 @@ def project_psid(nabla_n_C: dict, frame_vecs: list, n: int,
 # Functional independence (Jacobian rank, unchanged in principle)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _generic_rank(J: Matrix, samples: int = 3, seed: int = 20260611) -> int:
+    """
+    Generic rank of a symbolic matrix, via exact substitution of random
+    rational points followed by high-precision numeric evaluation.
+
+    rank(J(point)) <= generic rank, with equality for almost every point,
+    so the max over a few good samples is almost surely the generic rank.
+    Points that hit singularities (nan/zoo, complex leakage from branch
+    cuts) are discarded and resampled.  Falls back to symbolic rank if
+    sampling keeps failing.
+    """
+    import random as _random
+    free = sorted(J.free_symbols, key=str)
+    if not free:
+        try:
+            return J.rank()
+        except Exception:
+            return 0
+    rng = _random.Random(seed)
+    nrows, ncols = J.shape
+    maxrank = min(nrows, ncols)
+    best, successes, attempts = 0, 0, 0
+    thresh = sp.Float('1e-22')
+    while successes < samples and attempts < 10 * samples:
+        attempts += 1
+        point = {s: sp.Rational(rng.randint(3, 199), rng.randint(3, 199))
+                 for s in free}
+        try:
+            Jn = J.subs(point, simultaneous=True)
+            rows, bad = [], False
+            for i in range(nrows):
+                row = []
+                for j in range(ncols):
+                    v = sp.N(Jn[i, j], 40)
+                    if not v.is_number or v.has(sp.nan) or v.has(sp.zoo):
+                        bad = True; break
+                    vr, vi = sp.re(v), sp.im(v)
+                    if abs(vi) > thresh:        # complex leakage: bad point
+                        bad = True; break
+                    row.append(vr)
+                if bad: break
+                rows.append(row)
+            if bad:
+                continue
+            r = Matrix(rows).rank(iszerofunc=lambda x: abs(x) < thresh)
+        except Exception:
+            continue
+        successes += 1
+        best = max(best, r)
+        if best == maxrank:
+            return best
+    if successes:
+        return best
+    # Symbolic fallback (slow but exact)
+    cz = lambda x: sp.cancel(x) == 0
+    try:
+        return J.applyfunc(sp.cancel).rank(iszerofunc=cz, simplify=sp.cancel)
+    except Exception:
+        return J.rank()
+
+
 def indep_count(scalars: list, coords: list, simp_fn=None) -> int:
     """
-    Number of functionally independent real scalars = rank of Jacobian.
-    Implements CLASSI's FUNTST (funtst.shp) via SymPy Matrix.rank().
+    t = number of functionally independent real scalars among `scalars`
+      = generic rank of the Jacobian  ∂(scalars)/∂(coords).
 
-    For metrics with undetermined functions (FUNS/NEWSUL case), any
-    applied functions F(x) and their derivatives F'(x), F''(x) etc.
-    are substituted with fresh positive symbols before all simplification.
-    This prevents sp.cancel from hanging on expressions like p**(m**2)*G(p).
+    This implements CLASSI's FUNTST semantics: independence is judged for
+    the scalars AS FUNCTIONS ON THE MANIFOLD, so the Jacobian is taken
+    w.r.t. the coordinates ONLY.  Undetermined functions (FUNS metrics)
+    are differentiated with the chain rule intact — Derivative objects
+    survive into the Jacobian — and only AFTERWARD are f, f', f'', ...
+    replaced by fresh real symbols inside the Jacobian entries, so the
+    rank is that of a generic member of the function class.
+
+    (The previous implementation freshened f, f', ... in the scalars
+    upfront and added the fresh symbols as extra coordinates.  Every new
+    derivative order then looked like a new independent coordinate
+    direction, and t grew without bound on FUNS metrics such as wavez.
+    Scalars that are all functions of u alone must contribute rank <= 1
+    no matter how many derivatives of f(u) appear; differentiating first
+    gets this automatically.)
+
+    Complex scalars are handled by splitting the Jacobian rows into real
+    and imaginary parts after freshening (valid since the coordinates are
+    real: dRe(s)/dc = Re(ds/dc)).  Metric functions should carry
+    real=True assumptions in their definitions.
     """
     if not scalars:
         return 0
-
-    # Build FUNS substitution map upfront from all scalars
     from sympy.core.function import AppliedUndef
-    funs_subs = {}
-    extra_coords = []
-    all_atoms = set()
+
+    # 1. Jacobian w.r.t. manifold coordinates, chain rule intact.
+    rows = []
     for s in scalars:
+        s = sp.sympify(s)
+        rows.append([diff(s, c) for c in coords])
+    J = Matrix(rows)
+
+    # 2. Freshen function atoms inside the Jacobian entries.
+    #    Subs wrappers first (most composite), then Derivatives (highest
+    #    order first), then bare applied functions — so that substituting
+    #    f(u) -> _ff never corrupts a containing Derivative(f(u), u).
+    subs_seq = []
+    k = 0
+
+    subs_atoms = set()
+    for e in J:
         try:
-            all_atoms |= s.atoms(sp.Derivative, sp.Function)
+            subs_atoms |= e.atoms(sp.Subs)
         except Exception:
             pass
-    for atom in sorted(all_atoms, key=str):
-        if atom in funs_subs:
-            continue
-        if isinstance(atom, sp.Derivative):
-            sym = sp.Symbol(f'_fd{len(funs_subs)}', positive=True)
-            funs_subs[atom] = sym
-            extra_coords.append(sym)
-        elif isinstance(atom, AppliedUndef):
-            sym = sp.Symbol(f'_ff{len(funs_subs)}', positive=True)
-            funs_subs[atom] = sym
-            extra_coords.append(sym)
+    for a in sorted(subs_atoms, key=str):
+        subs_seq.append((a, sp.Symbol(f'_fs{k}', real=True))); k += 1
 
-    def _sub(expr):
-        return expr.subs(funs_subs) if funs_subs else expr
-
-    all_coords = list(coords) + extra_coords
-
-    # Extract real/imag parts after substitution
-    real_scalars = []
-    for s in scalars:
-        s2 = _sub(s)
-        r = sp.cancel(sp.re(s2))
-        i_part = sp.cancel(sp.im(s2))
-        if r != 0: real_scalars.append(r)
-        if i_part != 0: real_scalars.append(i_part)
-    if not real_scalars:
-        return 0
-
-    # Deduplicate using sp.cancel (safe after FUNS substitution)
-    seen, unique = [], []
-    for s in real_scalars:
-        if not any(sp.cancel(s - u) == 0 or sp.cancel(s + u) == 0 for u in seen):
-            seen.append(s)
-            unique.append(s)
-
-    J = Matrix([[diff(s, c) for c in all_coords] for s in unique])
-    cancel_zero = lambda x: sp.cancel(x) == 0
-    try:
-        Js = J.applyfunc(sp.cancel)
-        return Js.rank(iszerofunc=cancel_zero, simplify=sp.cancel)
-    except Exception:
+    deriv_atoms = set()
+    for e in J:
         try:
-            return J.rank(iszerofunc=cancel_zero, simplify=sp.cancel)
+            deriv_atoms |= e.atoms(sp.Derivative)
         except Exception:
-            return J.rank()
+            pass
+    for d in sorted(deriv_atoms, key=lambda d: (-len(d.variables), str(d))):
+        subs_seq.append((d, sp.Symbol(f'_fd{k}', real=True))); k += 1
+
+    fun_atoms = set()
+    for e in J:
+        try:
+            fun_atoms |= e.atoms(AppliedUndef)
+        except Exception:
+            pass
+    for f in sorted(fun_atoms, key=str):
+        subs_seq.append((f, sp.Symbol(f'_ff{k}', real=True))); k += 1
+
+    if subs_seq:
+        J = J.subs(subs_seq)   # ordered sequential substitution
+
+    # 3. Split rows into real and imaginary parts (coords are real).
+    real_rows = []
+    for i in range(J.shape[0]):
+        re_row, im_row = [], []
+        any_im = False
+        for j in range(J.shape[1]):
+            e = J[i, j]
+            try:
+                er, ei = sp.re(e), sp.im(e)
+            except Exception:
+                er, ei = e, sp.S.Zero
+            re_row.append(er)
+            im_row.append(ei)
+            if ei != 0:
+                any_im = True
+        real_rows.append(re_row)
+        if any_im:
+            real_rows.append(im_row)
+    J_real = Matrix(real_rows)
+
+    return _generic_rank(J_real)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Signature detection and coframe construction (unchanged)
