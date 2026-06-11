@@ -171,9 +171,16 @@ def dygend(PSI: list, coframe: list, simp_fn=None):
 def standardise(PSI: list, coframe: list, petrov_type: str, simp_fn=None):
     """
     Entry point: bring an arbitrary null tetrad to standard form.
-    Currently implements type D.  Other types raise NotImplementedError.
+
+    Currently implements type D fully.  For unimplemented types the coframe
+    is returned unchanged (graceful degradation — the classifier continues but
+    the isotropy/isometry result may be wrong if the frame isn't already
+    standard).
+
+    Returns standardised coframe as list of lists.
     """
     if petrov_type == 'D':
-        return dygend(PSI, coframe, simp_fn)
-    raise NotImplementedError(
-        f"Standardisation for Petrov type {petrov_type} not yet implemented.")
+        cf, _ = dygend(PSI, coframe, simp_fn)
+        return cf
+    # Types I, II, III, N, 0: not yet implemented — return unchanged
+    return [list(v) for v in coframe]

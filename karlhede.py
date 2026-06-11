@@ -1334,6 +1334,18 @@ class KarlhedeClassifier:
         log(f"  Petrov type: {petrov}")
         log(f"  Segre  type: {segre}")
 
+        # ── DYTAUT: standardise the null frame ───────────────────────
+        # Bring the tetrad to canonical form (PNDs aligned to l and n for
+        # type D, etc.) before running the isotropy test.  For unimplemented
+        # Petrov types the coframe is returned unchanged.
+        from .dytaut import standardise as _dytaut_standardise
+        coframe_list = _dytaut_standardise(PSI, [l, nv, m, mb], petrov, simp)
+        l, nv, m, mb = coframe_list
+        frame_vecs   = frame_vectors_from_coframe(coframe_list, gi, n)
+        # Recompute PSI and PHI in the standardised frame
+        PSI = [self._s(p) for p in weyl_spinor_from_coframe(C, gi, l, nv, m, mb, n, simp)]
+        PHI = [self._s(p) for p in ricci_spinor_from_coframe(S, gi, l, nv, m, mb, n, simp)]
+
         # ── Isotropy state initialised from Petrov type ───────────────
         # For standard (PND-aligned) frames, ISOTST PSI gives exactly the
         # PETROVLIST column-2 value (clabas.shp:16-22).
