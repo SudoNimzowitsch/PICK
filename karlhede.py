@@ -1624,6 +1624,20 @@ class KarlhedeClassifier:
         PSI = [self._s(p) for p in weyl_spinor_from_coframe(C, gi, l, nv, m, mb, n, simp)]
         PHI = [self._s(p) for p in ricci_spinor_from_coframe(S, gi, l, nv, m, mb, n, simp)]
 
+        # ── Normalisation (DYTAUT second half) ────────────────────────
+        # Type N: the boost is not isotropy (Ψ₀ → A²Ψ₀); CLASSI's standard
+        # frame fixes it by normalising Ψ₀ to a constant, absorbing one
+        # function into the frame (required for the FUNTST count).
+        if petrov == 'N':
+            from .dytaut import normalise_typeN as _norm_N
+            coframe_list, _changed = _norm_N(PSI, coframe_list, simp)
+            if _changed:
+                l, nv, m, mb = coframe_list
+                frame_vecs = frame_vectors_from_coframe(coframe_list, gi, n)
+                PSI = [self._s(p) for p in weyl_spinor_from_coframe(C, gi, l, nv, m, mb, n, simp)]
+                PHI = [self._s(p) for p in ricci_spinor_from_coframe(S, gi, l, nv, m, mb, n, simp)]
+                log(f"  → Type-N normalisation applied: PSI = {PSI}")
+
         # ── Isotropy state initialised from Petrov type ───────────────
         # For standard (PND-aligned) frames, ISOTST PSI gives exactly the
         # PETROVLIST column-2 value (clabas.shp:16-22).

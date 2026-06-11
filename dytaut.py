@@ -453,3 +453,45 @@ def dygen1(PSI: list, coframe: list, simp_fn=None):
     """
     # Not yet implemented — return unchanged
     return [list(v) for v in coframe], PSI
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Type-N normalisation (DYGENN second half)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def normalise_typeN(PSI: list, coframe: list, simp_fn=None):
+    """
+    Second half of DYGENN: after PND alignment (path '10000'), normalise
+    Ψ₀ to a constant via a boost.
+
+    Empirically pinned frame actions (wavez, 2026-06-11):
+        boost(A):  Ψ₀ → A²·Ψ₀
+        spin(θ):   Ψ₀ → e^{2iθ}·Ψ₀
+
+    CLASSI's DYGENN!-10000 dyad is diag(Ψ₀^(1/4), Ψ₀^(-1/4)).  The boost
+    is NOT isotropy for type N (Ψ₀ has boost weight 2), so the standard
+    frame fixes this freedom by absorbing |Ψ₀| into the frame.  This is
+    required for the FUNTST count: e.g. wavez has t₀ = 0 because the one
+    function p(u) in Ψ₀ is absorbed here, reappearing only at order 1
+    through ∇C.
+
+    A = (Ψ₀²)^(-1/4) = |Ψ₀|^(-1/2) for real Ψ₀, kept as a power (no Abs)
+    so the frame stays differentiable.  The residual constant (±1) carries
+    no coordinate dependence.  Phase (spin) normalisation for genuinely
+    complex Ψ₀ is not yet implemented.
+
+    Returns (coframe, changed).
+    """
+    from .reduction_tests import boost as _boost
+    s = lambda x: _simp(x, simp_fn)
+
+    if petrov_path(PSI, simp_fn) != '10000':
+        return [list(v) for v in coframe], False
+    P0 = s(PSI[0])
+    if P0 == 0:
+        return [list(v) for v in coframe], False
+    A = s((P0**2)**sp.Rational(-1, 4))
+    if A == 1:
+        return [list(v) for v in coframe], False
+    cf = _boost([list(v) for v in coframe], A, simp_fn)
+    return [list(v) for v in cf], True
