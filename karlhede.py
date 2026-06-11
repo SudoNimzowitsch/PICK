@@ -600,6 +600,22 @@ def segre_from_phi(PHI: list, lambd, simp_fn=None) -> str:
     if phi00 == 0 and phi22 == 0 and phi02 == 0:
         return 'A1 [(11)(1,1)] electromagnetic non-null'
 
+    # Rank-1 PHI matrix with real nonzero eigenvalue → electromagnetic non-null
+    # (standard form has phi11 only, but pre-standardisation may look different)
+    M_phi = sp.Matrix([
+        [phi00, phi01, phi02],
+        [sp.conjugate(phi01), phi11, phi12],
+        [sp.conjugate(phi02), sp.conjugate(phi12), phi22],
+    ])
+    try:
+        if M_phi.rank() == 1:
+            evals = list(M_phi.eigenvals().keys())
+            nonzero_evals = [e for e in evals if _simp(e, simp_fn) != 0]
+            if len(nonzero_evals) == 1 and sp.im(_simp(nonzero_evals[0], simp_fn)) == 0:
+                return 'A1 [(11)(1,1)] electromagnetic non-null'
+    except Exception:
+        pass
+
     return 'A1 [111,1] general'
 
 
@@ -1235,6 +1251,103 @@ _PSI_LEGS = {
 # Main classifier
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Plebański-Petrov type (for conformally flat metrics, from PHI structure)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Maps PP type string → initial isotropy symbol (from SEGRELIST in clabas.shp)
+PPETROV_INITIAL_ISO = {
+    'v':  '6',  # vacuum / Lambda-term: full Lorentz
+    'D':  'e',  # PP type D (electromagnetic non-null): boosts+rotations
+    'I':  '0',  # PP type I (general): trivial
+    'II': '0',  # PP type II: trivial
+    'III':'0',  # PP type III: trivial
+    'N':  'k',  # PP type N (null/radiation): null boosts
+    'r':  '0',  # pure radiation: trivial
+    'p':  'p',  # perfect fluid: SO(3)
+    't':  't',  # tachyon fluid: SO(2,1)
+    'l':  '6',  # lambda term: full Lorentz
+    'e':  'e',  # electromagnetic non-null (alias for D): boosts+rotations
+}
+
+# Maps Segre type string (from segre_from_phi) → initial isotropy symbol
+# for conformally flat metrics (CLASSI: from ISOTST CHI result via SEGRELIST)
+SEGRE_CONFLAT_ISO = {
+    'Vacuum':                              '6',
+    'A1 [(111,1)] Λ-term':                '6',
+    'A1 [(111),1] perfect fluid':          'p',
+    'A3 [(11,2)] pure radiation':          'k',
+    'A1 [(11)(1,1)] electromagnetic non-null': 'e',
+    'A1 [111,1] general':                  '0',
+}
+
+
+def pp_type_from_phi(PHI: list, simp_fn=None) -> str:
+    """
+    Determine the Plebański-Petrov type of the Ricci spinor PHI.
+
+    PHI = [Φ₀₀, Φ₀₁, Φ₀₂, Φ₁₁, Φ₁₂, Φ₂₂] (the trace-free part).
+
+    Uses the 3×3 Hermitian matrix Φ_{AB'} and its eigenvalue structure.
+    Returns a string: 'v' (vacuum), 'D', 'I', 'II', 'III', 'N', 'r', 'p' etc.
+    """
+    phi = [_simp(p, simp_fn) for p in PHI]
+    phi00, phi01, phi02, phi11, phi12, phi22 = phi
+
+    # All zero → vacuum
+    if all(p == 0 for p in phi):
+        return 'v'
+
+    # Build the 3×3 Hermitian matrix
+    M = sp.Matrix([
+        [phi00,              phi01,              phi02             ],
+        [sp.conjugate(phi01), phi11,             phi12             ],
+        [sp.conjugate(phi02), sp.conjugate(phi12), phi22           ],
+    ])
+
+    try:
+        r = M.rank()
+    except Exception:
+        r = 3  # assume general if rank fails
+
+    if r == 0:
+        return 'v'
+
+    if r == 1:
+        # Rank 1: either PP type D or PP type N depending on eigenvalue reality
+        # Type D: one nonzero real eigenvalue (electromagnetic non-null)
+        # Type N: null eigenvector (pure radiation)
+        # Quick check: if the diagonal entries are all real and positive (or all negative),
+        # it's type D. Check the trace² vs sum of squares.
+        try:
+            evals = list(M.eigenvals().keys())
+            nonzero = [e for e in evals if _simp(e, simp_fn) != 0]
+            if len(nonzero) == 1:
+                ev = _simp(nonzero[0], simp_fn)
+                # Real nonzero eigenvalue → type D (electromagnetic non-null)
+                if sp.im(ev) == 0:
+                    return 'D'
+                else:
+                    return 'N'
+        except Exception:
+            pass
+        return 'D'  # default rank-1 assumption
+
+    if r == 2:
+        # Two nonzero eigenvalues: PP type II or I depending on structure
+        try:
+            evals = list(M.eigenvals().keys())
+            nonzero = [_simp(e, simp_fn) for e in evals if _simp(e, simp_fn) != 0]
+            if len(nonzero) == 1:
+                return 'II'  # one double nonzero eigenvalue
+            return 'I'  # two distinct nonzero eigenvalues
+        except Exception:
+            return 'I'
+
+    # r == 3: general type I
+    return 'I'
+
 class KarlhedeClassifier:
     """
     Classify a spacetime metric via the Cartan-Karlhede algorithm.
@@ -1428,9 +1541,13 @@ class KarlhedeClassifier:
         # PETROVLIST column-2 value (clabas.shp:16-22).
         iso = IsotropyFlags()
         if petrov == '0':
-            # Conformally flat: ISOTST PSI skipped (CLASSI classi4ord0:215)
-            # All flags remain True → symbol='6'
-            pass
+            # Conformally flat: skip PSI isotropy test.
+            # Set initial isotropy from the Segre type of PHI (already computed
+            # above via segre_from_phi), via the SEGRE_CONFLAT_ISO table.
+            # This mirrors CLASSI's ISOTST CHI → SEGRELIST lookup.
+            cf_iso = SEGRE_CONFLAT_ISO.get(segre, '0')
+            iso._set_to_symbol(cf_iso)
+            log(f"  → Segre: {segre}, conformally-flat initial isotropy: {cf_iso}")
         else:
             iso.set_from_petrov(petrov)
 
@@ -1446,7 +1563,9 @@ class KarlhedeClassifier:
         # ISOTST PHI: trace-free PHI is already the correct spinor (uses S).
         # Only run if PHI is nonzero (NOPHI=F in CLASSI terminology).
         phi_nonzero = not all(self._s(p) == 0 for p in PHI)
-        if phi_nonzero and not _is_10101:
+        if phi_nonzero and not _is_10101 and petrov != '0':
+            # For conformally flat (petrov='0'): isotropy already set from
+            # PP type above; skip the weight-based PHI test on unstandardised frame.
             test_phi_isotropy(PHI, iso, simp)
 
         H0_sym = iso.symbol
