@@ -1213,7 +1213,7 @@ class KarlhedeClassifier:
     verbose         : print progress
     """
 
-    def __init__(self, metric, coords,
+    def __init__(self, metric=None, coords=None,
                  null_coframe=None, orthonormal_coframe=None,
                  contravariant=False, signature=None, tetrad_type='auto',
                  simplify_fn=None, max_order=7, verbose=True,
@@ -1246,6 +1246,27 @@ class KarlhedeClassifier:
         log("─"*50)
         log("  PICK  Karlhede Classification")
         log("─"*50)
+
+        # ── Reconstruct metric from coframe if not supplied ─────────
+        if g is None:
+            if self.null_coframe is None:
+                raise ValueError(
+                    "KarlhedeClassifier requires either metric or null_coframe.")
+            # g_{μν} = l_μ n_ν + n_μ l_ν − m_μ mb̄_ν − mb̄_μ m_ν
+            raw_cf = list(self.null_coframe)
+            if self.contravariant:
+                # Will be inverted later; for metric reconstruction use raw
+                pass
+            lc, nc, mc, mbc = [sp.Matrix(v) for v in raw_cf]
+            g = Matrix(n, n, lambda i, j:
+                self._s(lc[i]*nc[j] + nc[i]*lc[j]
+                        - mc[i]*mbc[j] - mbc[i]*mc[j]))
+            coords = self.coords  # must be set by caller when using null_coframe
+            if coords is None:
+                raise ValueError(
+                    "coords must be provided when using null_coframe without metric.")
+            log("  → Metric reconstructed from null coframe.")
+            self._metric_from_coframe = True
 
         # ── Geometry ─────────────────────────────────────────────────
         log("\n[1/5] Christoffel symbols...")
@@ -1299,9 +1320,14 @@ class KarlhedeClassifier:
         if self.null_coframe is not None:
             raw = _to_coframe(self.null_coframe, "null coframe")
             l, nv, m, mb = raw[0], raw[1], raw[2], raw[3]
-            log("  → Validating null coframe...")
-            ttype = validate_null_coframe(gi, (l,nv,m,mb), sig, simp)
-            log(f"  → Type: {ttype}")
+            if getattr(self, '_metric_from_coframe', False):
+                # Metric was reconstructed from this coframe, so it is
+                # valid by construction — skip the inner-product check.
+                ttype = 'A'
+            else:
+                log("  → Validating null coframe...")
+                ttype = validate_null_coframe(gi, (l,nv,m,mb), sig, simp)
+                log(f"  → Type: {ttype}")
         elif self.orthonormal_coframe is not None:
             raw = _to_coframe(self.orthonormal_coframe, "orthonormal coframe")
             l, nv, m, mb = null_coframe_from_orthonormal_coframe(

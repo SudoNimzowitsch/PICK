@@ -344,29 +344,35 @@ def dygen3(PSI: list, coframe: list, simp_fn=None):
         elif mult == 1:
             r1 = r
 
-    # Step 1: send 3-fold root to ∞
-    # nl(E) sends: 0→0, inf→-1/E, r→r/(1-rE).
-    # To send r3→inf: need -1/E = r3 → E = -1/r3.
-    if r3 is not None and r3 != S.Infinity:
+    # Root actions: nl(E): 0→0, inf→-1/E, r→r/(1-rE)
+    #               nn(E): inf→inf, r→r-E  (shift by -E)
+
+    if r3 == S.Infinity:
+        # Triple root already at ∞. Just send simple root to 0.
+        if r1 is not None and r1 != S.Zero and r1 != S.Infinity:
+            cf = _nn(cf, r1, simp_fn)
+
+    elif r3 == S.Zero:
+        # Triple root at 0. Need triple→∞, simple→0.
+        # nn(r1): shifts r1→0, triple 0→-r1.
+        # nl(-1/r1): sends -r1→∞ (denom 1-(-r1)·(-1/r1)=0), simple stays 0.
+        if r1 is not None and r1 != S.Infinity and r1 != S.Zero:
+            cf = _nn(cf, r1, simp_fn)
+            cf = _nl(cf, s(-S.One / r1), simp_fn)
+        # Other degenerate cases (r1=0 or r1=∞): graceful degradation
+
+    else:
+        # Triple root at finite r3 ≠ 0. nl(-1/r3): r3→∞, r→r/(1-r*(-1/r3)).
         E3 = s(-S.One / r3)
         cf = _nl(cf, E3, simp_fn)
-        # Update r1 under nl(E3): r1 → r1/(1-r1*E3)
+        # Update r1: r1 → r1/(1 - r1*E3)
         if r1 is not None and r1 != S.Infinity:
             r1 = s(r1 / (1 - r1 * E3))
         elif r1 == S.Infinity:
-            r1 = s(-S.One / E3)  # inf → -1/E3 = r3
-    elif r3 == S.Infinity:
-        # 3-fold root already at ∞
-        pass
-
-    # Step 2: send simple root to 0
-    # nn(E) sends: inf→inf, 0→-E. To send r1→0: need -E=r1 → E=-r1... 
-    # Wait: nn(E) sends 0→-E and inf→inf. Empirically: nn(E) shifts roots by -E.
-    # So nn(E) maps r → r-E. To map r1→0: set E=r1.
-    # But WAIT: nn(E) shifts the quartic roots: root at r_old → r_old - E.
-    # So to send r1→0: apply nn(r1) (shifts everything by -r1, so r1→0). YES.
-    if r1 is not None and r1 != S.Zero and r1 != S.Infinity:
-        cf = _nn(cf, r1, simp_fn)
+            r1 = s(-S.One / E3)  # inf → r3 (but r3 now at ∞ — skip step 2)
+            r1 = None
+        if r1 is not None and r1 != S.Zero and r1 != S.Infinity:
+            cf = _nn(cf, r1, simp_fn)
 
     return cf, PSI
 
