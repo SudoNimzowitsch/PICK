@@ -118,7 +118,11 @@ def dygend(PSI: list, coframe: list, simp_fn=None):
     s = lambda x: _simp(x, simp_fn)
     path = petrov_path(PSI, simp_fn)
 
-    if path == '00100':
+    if path in ('00100', '10101'):
+        # 00100: only Ψ₂, real roots at 0/∞ — already standard.
+        # 10101: Ψ₀=Ψ₄, complex conjugate roots — kept in this frame;
+        #        CLASSI would apply a complex Lorentz transform here but
+        #        PICK handles the isotropy test directly in the 10101 frame.
         return [list(v) for v in coframe], PSI
 
     (r1_val, d1), (r2_val, d2) = petrov_roots_typeD(PSI, simp_fn)
@@ -152,14 +156,14 @@ def dygend(PSI: list, coframe: list, simp_fn=None):
         # Check if one is already at 0
         if r1 == S.Zero:
             # r1=0 already standard; send r2→∞
-            cf = _nl(cf, s(S.One / r2), simp_fn)
+            cf = _nl(cf, s(-S.One / sp.conjugate(r2)), simp_fn)
         elif r2 == S.Zero:
             # r2=0 already standard; send r1→∞
-            cf = _nl(cf, s(S.One / r1), simp_fn)
+            cf = _nl(cf, s(-S.One / sp.conjugate(r1)), simp_fn)
         else:
             # General: shift r1→0 then send r2-r1→∞
             cf = _nn(cf, r1, simp_fn)
-            cf = _nl(cf, s(S.One / (r2 - r1)), simp_fn)
+            cf = _nl(cf, s(-S.One / sp.conjugate(r2 - r1)), simp_fn)
 
     return cf, PSI  # PSI placeholder; caller recomputes from coframe
 
@@ -302,7 +306,7 @@ def dygenn(PSI: list, coframe: list, simp_fn=None):
         cf = [list(cf[1]), list(cf[0]), list(cf[2]), list(cf[3])]
     else:
         # nl(E) sends ∞ → -1/E; to send r4→∞ set E = -1/r4
-        cf = _nl(cf, s(-S.One / r4), simp_fn)
+        cf = _nl(cf, s(-S.One / sp.conjugate(r4)), simp_fn)
 
     # ── Normalisation: set |Ψ₀| = 1 via boost ───────────────────────
     # After PND alignment, Ψ₀ ≠ 0 only.  CLASSI DYGENN!-10000:
@@ -367,12 +371,12 @@ def dygen3(PSI: list, coframe: list, simp_fn=None):
         # nl(-1/r1): sends -r1→∞ (denom 1-(-r1)·(-1/r1)=0), simple stays 0.
         if r1 is not None and r1 != S.Infinity and r1 != S.Zero:
             cf = _nn(cf, r1, simp_fn)
-            cf = _nl(cf, s(-S.One / r1), simp_fn)
+            cf = _nl(cf, s(-S.One / sp.conjugate(r1)), simp_fn)
         # Other degenerate cases (r1=0 or r1=∞): graceful degradation
 
     else:
         # Triple root at finite r3 ≠ 0. nl(-1/r3): r3→∞, r→r/(1-r*(-1/r3)).
-        E3 = s(-S.One / r3)
+        E3 = s(-S.One / sp.conjugate(r3))
         cf = _nl(cf, E3, simp_fn)
         # Update r1: r1 → r1/(1 - r1*E3)
         if r1 is not None and r1 != S.Infinity:

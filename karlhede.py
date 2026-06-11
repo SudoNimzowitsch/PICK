@@ -365,6 +365,58 @@ def _ghp_spin_weight(psi_k: int, direction: int) -> int:
     return psi_sw + dir_sw
 
 
+def test_psid_isotropy_10101(psid_comps: list, flags: IsotropyFlags,
+                             simp_fn=None) -> None:
+    """
+    Like test_psid_isotropy but for the type-D '10101' frame (Ψ₀=Ψ₄≠0).
+
+    In this frame a spin rotation e^{iθ} maps Ψ_k → e^{i(2-k)θ} Ψ_k.
+    Component (k,d) has spin weight sw = (2-k) + dir_sw(d).
+    Its 'conjugate pair' is (4-k,d) with spin weight -sw.
+    Spin isotropy survives if every (k,d) with sw≠0 is paired: the
+    (4-k,d) component is also nonzero.
+    Boost isotropy: always False in 10101 (Ψ₀=Ψ₄ is broken by boosts).
+    """
+    flags.boostiso = False  # boost changes Ψ₀/Ψ₄ ratio
+
+    # Build a dict of nonzero components for pairing check
+    nonzero = {}
+    for k, d, v in psid_comps:
+        v2 = sp.powsimp(sp.expand(v * v), force=True)
+        try:
+            v2_s = _simp(v2, simp_fn)
+        except Exception:
+            v2_s = v2
+        if v2_s != 0:
+            nonzero[(k, d)] = True
+
+    for (k, d) in nonzero:
+        sw = _ghp_spin_weight(k, d)
+        if sw == 0:
+            continue
+        # Check if conjugate pair (4-k, d) is also nonzero
+        pair = (4 - k, d)
+        if pair not in nonzero:
+            flags.rotiso = False
+            break
+
+    # Null rotation check (same as standard)
+    for k, d, v in psid_comps:
+        v2 = sp.powsimp(sp.expand(v * v), force=True)
+        try:
+            v2_s = _simp(v2, simp_fn)
+        except Exception:
+            v2_s = v2
+        if v2_s == 0:
+            continue
+        bw = _ghp_boost_weight(k, d)
+        sw = _ghp_spin_weight(k, d)
+        if bw + sw < 0 or (bw < 0 and sw == 0) or (bw == 0 and sw < 0):
+            if flags.nullrotiso:
+                flags.nullrotiso = False
+                flags.null1drotiso = False
+
+
 def test_psid_isotropy(psid_comps: list, flags: IsotropyFlags,
                        simp_fn=None) -> None:
     """
@@ -1258,9 +1310,13 @@ class KarlhedeClassifier:
                 # Will be inverted later; for metric reconstruction use raw
                 pass
             lc, nc, mc, mbc = [sp.Matrix(v) for v in raw_cf]
+            # NP metric: g_{μν} = -(l_μ n_ν + n_μ l_ν - m_μ mb_ν - mb_μ m_ν)
+            # The sign is required for PICK's convention l·n = -1.
+            # Without it the reconstructed g has the opposite sign, giving
+            # l·n = +1, wrong signature detection, and wrong Λ/PHI.
             g = Matrix(n, n, lambda i, j:
-                self._s(lc[i]*nc[j] + nc[i]*lc[j]
-                        - mc[i]*mbc[j] - mbc[i]*mc[j]))
+                self._s(-(lc[i]*nc[j] + nc[i]*lc[j]
+                          - mc[i]*mbc[j] - mbc[i]*mc[j])))
             coords = self.coords  # must be set by caller when using null_coframe
             if coords is None:
                 raise ValueError(
@@ -1320,14 +1376,9 @@ class KarlhedeClassifier:
         if self.null_coframe is not None:
             raw = _to_coframe(self.null_coframe, "null coframe")
             l, nv, m, mb = raw[0], raw[1], raw[2], raw[3]
-            if getattr(self, '_metric_from_coframe', False):
-                # Metric was reconstructed from this coframe, so it is
-                # valid by construction — skip the inner-product check.
-                ttype = 'A'
-            else:
-                log("  → Validating null coframe...")
-                ttype = validate_null_coframe(gi, (l,nv,m,mb), sig, simp)
-                log(f"  → Type: {ttype}")
+            log("  → Validating null coframe...")
+            ttype = validate_null_coframe(gi, (l,nv,m,mb), sig, simp)
+            log(f"  → Type: {ttype}")
         elif self.orthonormal_coframe is not None:
             raw = _to_coframe(self.orthonormal_coframe, "orthonormal coframe")
             l, nv, m, mb = null_coframe_from_orthonormal_coframe(
@@ -1383,10 +1434,19 @@ class KarlhedeClassifier:
         else:
             iso.set_from_petrov(petrov)
 
+        # For type D in 10101 form (Ψ₀=Ψ₄, complex PND roots): isotropy is
+        # spin ('s'). CLASSI would convert to 00100 via a complex Lorentz
+        # transformation; PICK retains the 10101 frame. In this frame the PHI
+        # weight slots differ from the 00100 convention, so skip the PHI test.
+        from .dytaut import petrov_path as _ppath
+        _is_10101 = (petrov == 'D' and _ppath(PSI, simp) == '10101')
+        if _is_10101:
+            iso._set_to_symbol('s')
+
         # ISOTST PHI: trace-free PHI is already the correct spinor (uses S).
         # Only run if PHI is nonzero (NOPHI=F in CLASSI terminology).
         phi_nonzero = not all(self._s(p) == 0 for p in PHI)
-        if phi_nonzero:
+        if phi_nonzero and not _is_10101:
             test_phi_isotropy(PHI, iso, simp)
 
         H0_sym = iso.symbol
@@ -1476,7 +1536,10 @@ class KarlhedeClassifier:
             if order == 1:
                 psid_comps_1 = psid_comps
             new_scalars = _extract_scalars(psid_comps)
-            test_psid_isotropy(psid_comps_1, iso, simp)
+            if _is_10101:
+                test_psid_isotropy_10101(psid_comps_1, iso, simp)
+            else:
+                test_psid_isotropy(psid_comps_1, iso, simp)
 
 
 
