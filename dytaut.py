@@ -296,12 +296,21 @@ def dygenn(PSI: list, coframe: list, simp_fn=None):
         r4 = roots_sorted[0][0]
 
     if r4 == S.Infinity:
-        # Already at ∞ — just needs normalisation (skipped for now)
-        pass
+        pass  # already at ∞
+    elif r4 == S.Zero:
+        # 4-fold root at 0: swap l↔n to send 0↔∞
+        cf = [list(cf[1]), list(cf[0]), list(cf[2]), list(cf[3])]
     else:
-        # nl(E) sends ∞ → -1/E. To send r4 → ∞: set -1/E = r4 → E = -1/r4.
-        E = s(-S.One / r4)
-        cf = _nl(cf, E, simp_fn)
+        # nl(E) sends ∞ → -1/E; to send r4→∞ set E = -1/r4
+        cf = _nl(cf, s(-S.One / r4), simp_fn)
+
+    # ── Normalisation: set |Ψ₀| = 1 via boost ───────────────────────
+    # After PND alignment, Ψ₀ ≠ 0 only.  CLASSI DYGENN!-10000:
+    #   L = [[Ψ₀^(1/4), 0],[0, Ψ₀^(-1/4)]]  (boost+spin).
+    # Coframe effect: boost(lambda) with lambda = |Ψ₀|^(1/2).
+    # Recompute PSI at the aligned coframe to get current Ψ₀.
+    # We skip this if PSI reconstruction is unavailable (caller can do it).
+    # For now: just return aligned frame; caller recomputes PSI.
 
     return cf, PSI
 
