@@ -628,9 +628,10 @@ def segre_from_phi(PHI: list, lambd, simp_fn=None) -> str:
 # Tensor machinery (unchanged from previous version)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def christoffel(g: Matrix, coords: list) -> dict:
+def christoffel(g: Matrix, coords: list, gi: Matrix = None) -> dict:
     n = len(coords)
-    gi = g.inv()
+    if gi is None:
+        gi = g.inv()
     G = {}
     for s in range(n):
         for m in range(n):
@@ -1585,11 +1586,12 @@ class KarlhedeClassifier:
                  null_coframe=None, orthonormal_coframe=None,
                  contravariant=False, signature=None, tetrad_type='auto',
                  simplify_fn=None, max_order=7, verbose=True,
-                 suls=None,
+                 suls=None, inverse_metric=None,
 ):
         self.g                   = metric
         self.coords              = coords
         self.suls                = suls or []
+        self.gi                  = inverse_metric
         self.null_coframe        = null_coframe
         self.orthonormal_coframe = orthonormal_coframe
         self.contravariant       = contravariant
@@ -1646,14 +1648,21 @@ class KarlhedeClassifier:
 
         # ── Geometry ─────────────────────────────────────────────────
         log("\n[1/5] Christoffel symbols...")
-        G = christoffel(g, coords)
+        G = christoffel(g, coords, gi=self.gi)
+        # Compact Γ entries immediately with plain cancel: Riemann/Ricci
+        # are built from these, and unsimplified Γ on dense metrics
+        # (ki, kiva, petrme) makes the downstream simplification explode.
+        # Deliberately NOT self._s: heavy per-metric simplifiers (e.g.
+        # trig) on 64 Γ entries cost more than they save; cancel is the
+        # cheap rational normal form that controls the swell.
+        G = {k: sp.cancel(v) for k, v in G.items()}
 
         log("[2/5] Riemann tensor...")
         R = riemann(g, coords, G)
 
         log("[3/5] Ricci & Weyl tensors...")
         Ric = ricci_ten(R, n).applyfunc(self._s)
-        gi  = g.inv()
+        gi  = self.gi if self.gi is not None else g.inv()
         Rs  = self._s(ricci_sc(Ric, gi))
 
         vacuum_check = all(self._s(Ric[i,j]) == 0
