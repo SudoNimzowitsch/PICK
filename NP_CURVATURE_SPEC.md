@@ -399,3 +399,32 @@ Implementation sketch:
       Ztil = antiselfdual_basis(cf,legs,H)   # eps=-i
       sigma_til = solve_connection(Ztil, dZtil)
       C_tilde, Eright = weyl_ricci_from_curvature(dsigma_til+..., Ztil)
+
+## RUNG 2 VALIDATED: connection σ_i and spin coefficients (sess.2, biv3.py)
+
+dZ^i = σ^i_j ∧ Z^j (MH eq24) solved as a linear system for the 12 components of
+σ1,σ2,σ3 (sympy solve over all 3-form components). UNIQUE solution on
+Schwarzschild. Spin coeffs extracted via MH eq20 by decomposing each σ_i in the
+θ basis using the frame VECTORS legs[a] (dual to coframe cf): coefficient of θ^a
+in σ_i = Σ_μ σ_{i,μ} legs[a]^μ.
+
+CRITICAL θ-basis assignment (pinned by type-D check, was initially swapped):
+MH labels θ1=n, θ2=l, θ3=-m̃, θ4=-m. In PICK legs (0=l,1=n,2=m,3=mb):
+  θ1 ↔ +n (idx1),  θ2 ↔ +l (idx0),  θ3 ↔ -m (idx2),  θ4 ↔ -mb (idx3).
+  σ1=(κ,τ,σ,ρ)[along θ1,θ2,θ3,θ4]; σ2=(ε,γ,β,α); σ3=(π,ν,μ,λ).
+(The naive guess θ3↔-mb, θ4↔-m gives σ↔ρ, λ↔μ swapped and fails type-D. The
+correct assignment is θ3↔-m(idx2), θ4↔-mb(idx3).)
+
+Schwarzschild result (VALIDATED): κ=σ=λ=ν=0 (type D: both null congruences
+geodesic+shear-free, Goldberg-Sachs), and
+  ρ = μ = √(A/2)/r   [= sqrt(-4M+2r)/(2 r^{3/2}), matches known form exactly]
+  ε = γ (nonzero),  β = -α = -√2 cot(θ)/(4r),  τ=π=0.
+A=1-2M/r; the √(A/2) reflects PICK's (A/2)^{1/2} leg normalization.
+
+NEXT RUNG: curvature Σ_i = dσ_i + (σ∧σ) (MH eq34):
+  Σ1=dσ1+2σ1∧σ2,  Σ2=dσ2+σ1∧σ3,  Σ3=dσ3+2σ2∧σ3.
+Then expand Σ_i in the Z^j (self-dual) and Z̃^j (anti-self-dual) basis (eq33):
+  Σ_i = (C_ij + (R/6)γ_ij) Z^j + E_ij Z̃^j,
+read Weyl C_ij = [[Ψ0,Ψ1,Ψ2],[Ψ1,Ψ2,Ψ3],[Ψ2,Ψ3,Ψ4]] (eq29) and Ricci E_ij.
+γ_ij = MH eq19 3-metric [[0,0,½],[0,-¼,0],[½,0,0]]. Validate Ψ2=-M/r³ exact.
+Prototype: prototypes/bivector_prototype_v3.py (= /tmp/biv3.py).
