@@ -428,3 +428,44 @@ Then expand Σ_i in the Z^j (self-dual) and Z̃^j (anti-self-dual) basis (eq33):
 read Weyl C_ij = [[Ψ0,Ψ1,Ψ2],[Ψ1,Ψ2,Ψ3],[Ψ2,Ψ3,Ψ4]] (eq29) and Ricci E_ij.
 γ_ij = MH eq19 3-metric [[0,0,½],[0,-¼,0],[½,0,0]]. Validate Ψ2=-M/r³ exact.
 Prototype: prototypes/bivector_prototype_v3.py (= /tmp/biv3.py).
+
+## RUNG 3 VALIDATED — ORDER-0 LADDER COMPLETE (sess.2, biv4.py)
+
+Curvature Σ_i = dσ_i + (σ∧σ) (MH eq34) computed from the solved connection,
+expanded in the self-dual Z^j basis (vacuum: Σ_i = C_ij Z^j) by solving the
+overdetermined 6-component system Σ_i = Σ_j C_ij Z^j via least-squares (exact,
+consistent because Σ_i is self-dual by construction).
+
+SCHWARZSCHILD RESULT (EXACT):
+  C = [[0, 0, -M/r³],
+       [0, -M/r³, 0],
+       [-M/r³, 0, 0]]
+i.e. Ψ2 = C[0,2]=C[1,1]=C[2,0] = -M/r³ exact, Ψ0=Ψ1=Ψ3=Ψ4=0. Textbook type D.
+NO coordinate Riemann tensor anywhere in the pipeline.
+
+THE ORDER-0 LADDER IS COMPLETE AND VALIDATED END-TO-END:
+  self-dual basis (frame Hodge, eps=i) ✓
+  → connection σ_i (solve dZ^i=σ^i_j∧Z^j) ✓
+  → spin coefficients (MH eq20, θ3↔-m θ4↔-mb) ✓ (type-D κ=σ=λ=ν=0)
+  → curvature Σ_i = dσ_i + σ∧σ ✓
+  → Weyl C_ij via Σ_i = C_ij Z^j ✓  (Ψ2 = -M/r³ exact)
+
+This replaces the memory-unbounded christoffel→riemann→weyl_ten pipeline for
+order 0. Prototype: prototypes/bivector_prototype_v4.py (= /tmp/biv4.py).
+
+### NEXT STEPS (productionization — good Sonnet handoff point)
+1. Generalize Σ_i expansion to NON-vacuum: Σ_i = (C_ij+(R/6)γ_ij)Z^j + E_ij Z̃^j.
+   Build Z̃^j (anti-self-dual, eps=-i) and the 6×6 [Z|Z̃] system; read C_ij (Weyl)
+   AND E_ij (Ricci Φ) AND R (scalar) together. Validate on renord (Ψ2≠0, Φ11≠0),
+   einuni/friedc (conformally flat: C=0, E≠0).
+2. Map C_ij→PICK Ψ_k order and E_ij→PICK PHI components; reuse existing
+   downstream (DYTAUT, isotropy) UNCHANGED. The map must reproduce the existing
+   weyl_spinor_from_coframe / ricci_spinor_from_coframe outputs EXACTLY.
+3. Wrap as frame_curvature_from_coframe(coframe,coords,simp)->(PSI,PHI,LAMBD)
+   behind a flag in karlhede.py; cross-validate BOTH paths equal on the 14-metric
+   battery (the gate).
+4. Left/right conjugation conditional (already designed, see above): Lorentzian
+   fast-path Ψ̃=conj(Ψ); Kleinian/complex compute Z̃ half independently.
+5. Run ki/kiva/petrme through the order-0 frame path; confirm NO dense blowup,
+   expect ki→00D r=4 t=111 H=ess, kiva→ebb.
+6. Then (separate, option-a): order-≥1 spinor derivatives (MacCallum-Åman V^nR).
