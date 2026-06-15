@@ -48,6 +48,7 @@ def metric_from_tetrad_legs(legs):
 
 def minkowski():
     t, r, H, P = symbols('t r H P', real=True)
+    r = symbols('r', positive=True)   # r > 0 avoids Abs(r) in frame vectors
     g = metric_from_tetrad_legs([1, 1, r, r*sin(H)])
     return {'g': g, 'coords': [t,r,H,P], 'simp': simp_basic,
             'ptest_name': 'minkow',
@@ -153,7 +154,7 @@ def szekeres():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def try2():
-    T, X, Y, Z = symbols('T X Y Z', real=True)
+    T, X, Y, Z = symbols('T X Y Z', positive=True)  # T>0 needed for T^C to be real
     C = Symbol('C', positive=True)
     F = X*T + T**C
     g = metric_from_tetrad_legs([exp(F), 1, 1, 1])

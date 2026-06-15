@@ -744,6 +744,220 @@ def _raise_all(T: dict, gi: Matrix, n: int, rank: int) -> dict:
     return result
 
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Frame-curvature route (McIntosh-Hickman bivector, NP_CURVATURE_SPEC.md)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def frame_curvature_from_coframe(coframe, coords, gi=None, simp_fn=None, n=4):
+    """
+    PSI, PHI, LAMBD from null coframe via McIntosh-Hickman bivector route.
+    PICK convention: l·n=-1, m·mb=+1, coframe=[l,n,m,mb].
+    Coframe entries must be simplified (Abs-free, Piecewise-free).
+    gi : inverse metric matrix (optional but recommended; computed from coframe if absent).
+    """
+    def _s(e): return _simp(e, simp_fn)
+
+    l, nv, m, mb = coframe[0], coframe[1], coframe[2], coframe[3]
+
+    # Frame vectors e_a^mu (dual to coframe) — needed for frame projections
+    if gi is None:
+        # Reconstruct g from coframe then invert
+        g_rec = sp.Matrix(n,n,lambda i,j: _s(
+            -(l[i]*nv[j]+nv[i]*l[j]-m[i]*mb[j]-mb[i]*m[j])))
+        gi = g_rec.inv()
+    legs = frame_vectors_from_coframe(coframe, gi, n)
+
+    # 1. Self-dual basis Z^i in COORDINATE components
+    def _w(A, B):
+        return {(mu,nu): _s(A[mu]*B[nu]-A[nu]*B[mu])
+                for mu in range(n) for nu in range(n) if mu < nu}
+    def _neg(d): return {k: -v for k,v in d.items()}
+    def _add(*ds):
+        out = {}
+        for d in ds:
+            for k,v in d.items(): out[k] = _s(out.get(k, sp.S.Zero)+v)
+        return out
+    def _sc(d, k): return {key: _s(k*v) for key,v in d.items()}
+
+    Z = {1: _neg(_w(nv,mb)), 2: _add(_neg(_w(l,nv)),_w(m,mb)), 3: _w(l,m)}
+
+    # 2. Reality check for Lorentzian fast-path
+    # Use .is_real first (handles positive-declared symbols like sqrt(exp(T^C))),
+    # fall back to simp_fn on im(c) if .is_real is None (unknown).
+    def _is_real_expr(c):
+        if c.is_real is True: return True
+        if c.is_real is False: return False
+        return _simp(sp.im(c), simp_fn) == 0
+
+    def _is_conj(c, d):
+        diff = c - sp.conjugate(d)
+        if diff == 0: return True
+        if diff.is_zero is True: return True
+        return _simp(diff, simp_fn) == 0
+
+    lorentzian = (all(_is_real_expr(c) for c in l+nv) and
+                  all(_is_conj(c, d) for c, d in zip(mb, m)))
+
+    # 3. dZ^i (exterior derivative: 2-form -> 3-form)
+    def _d2(Fd):
+        out = {}
+        for a in range(n):
+            for b in range(n):
+                for c in range(n):
+                    if not(a<b<c): continue
+                    def F(i,j,_F=Fd):
+                        if i<j: return _F.get((i,j),sp.S.Zero)
+                        if i>j: return -_F.get((j,i),sp.S.Zero)
+                        return sp.S.Zero
+                    v = _s(sp.diff(F(b,c),coords[a])
+                           -sp.diff(F(a,c),coords[b])
+                           +sp.diff(F(a,b),coords[c]))
+                    if v != 0: out[(a,b,c)] = v
+        return out
+
+    dZ = {i: _d2(Z[i]) for i in [1,2,3]}
+
+    # 4. Connection solve: dZ^i = sigma^i_j ∧ Z^j  (MH eq24)
+    s = {i: [sp.Symbol(f'_s{i}{mu}') for mu in range(n)] for i in [1,2,3]}
+    def _swZ(si, Zj):
+        out = {}
+        for a in range(n):
+            for b in range(n):
+                for c in range(n):
+                    if not(a<b<c): continue
+                    def Zc(i,j,_Z=Zj):
+                        if i<j: return _Z.get((i,j),sp.S.Zero)
+                        if i>j: return -_Z.get((j,i),sp.S.Zero)
+                        return sp.S.Zero
+                    v = _s(si[a]*Zc(b,c)-si[b]*Zc(a,c)+si[c]*Zc(a,b))
+                    if v != 0: out[(a,b,c)] = v
+        return out
+
+    rhs = {
+        1: _add(_sc(_swZ(s[2],Z[1]),-2), _sc(_swZ(s[3],Z[2]),-1)),
+        2: _add(_sc(_swZ(s[1],Z[1]), 2), _sc(_swZ(s[3],Z[3]),-2)),
+        3: _add(_swZ(s[1],Z[2]), _sc(_swZ(s[2],Z[3]),2)),
+    }
+    eqs = []
+    for i in [1,2,3]:
+        for k in set(list(dZ[i])+list(rhs[i])):
+            eqs.append(_s(dZ[i].get(k,sp.S.Zero)-rhs[i].get(k,sp.S.Zero)))
+    unknowns = [s[i][mu] for i in [1,2,3] for mu in range(n)]
+    sol = sp.solve(eqs, unknowns, dict=True)
+    if not sol: raise RuntimeError("frame_curvature: connection solve failed")
+    so = sol[0]
+    sigma = {i: [_s(so.get(s[i][mu],sp.S.Zero)) for mu in range(n)]
+             for i in [1,2,3]}
+
+    # 5. Curvature Sigma_i = dσ_i + (σ∧σ terms)
+    def _d1(si):
+        return {(mu,nu): _s(sp.diff(si[nu],coords[mu])-sp.diff(si[mu],coords[nu]))
+                for mu in range(n) for nu in range(n) if mu<nu}
+    def _w11(A,B):
+        return {(mu,nu): _s(A[mu]*B[nu]-A[nu]*B[mu])
+                for mu in range(n) for nu in range(n) if mu<nu}
+
+    Sig = {
+        1: _add(_d1(sigma[1]), _sc(_w11(sigma[1],sigma[2]),2)),
+        2: _add(_d1(sigma[2]), _w11(sigma[1],sigma[3])),
+        3: _add(_d1(sigma[3]), _sc(_w11(sigma[2],sigma[3]),2)),
+    }
+
+    # 6. Right-half
+    if lorentzian:
+        sigma_t = {i: [sp.conjugate(c) for c in sigma[i]] for i in [1,2,3]}
+    else:
+        Zt = {1:_neg(_w(nv,m)), 2:_add(_neg(_w(l,nv)),_w(mb,m)), 3:_w(l,mb)}
+        dZt = {i:_d2(Zt[i]) for i in [1,2,3]}
+        st = {i:[sp.Symbol(f'_st{i}{mu}') for mu in range(n)] for i in [1,2,3]}
+        rhs_t = {
+            1: _add(_sc(_swZ(st[2],Zt[1]),-2),_sc(_swZ(st[3],Zt[2]),-1)),
+            2: _add(_sc(_swZ(st[1],Zt[1]), 2),_sc(_swZ(st[3],Zt[3]),-2)),
+            3: _add(_swZ(st[1],Zt[2]),_sc(_swZ(st[2],Zt[3]),2)),
+        }
+        eqs_t = []
+        for i in [1,2,3]:
+            for k in set(list(dZt[i])+list(rhs_t[i])):
+                eqs_t.append(_s(dZt[i].get(k,sp.S.Zero)-rhs_t[i].get(k,sp.S.Zero)))
+        sol_t = sp.solve(eqs_t,[st[i][mu] for i in [1,2,3] for mu in range(n)],dict=True)
+        if not sol_t: raise RuntimeError("frame_curvature: tilde connection solve failed")
+        so_t = sol_t[0]
+        sigma_t = {i:[_s(so_t.get(st[i][mu],sp.S.Zero)) for mu in range(n)]
+                   for i in [1,2,3]}
+
+    Sig_t = {
+        1: _add(_d1(sigma_t[1]), _sc(_w11(sigma_t[1],sigma_t[2]),2)),
+        2: _add(_d1(sigma_t[2]), _w11(sigma_t[1],sigma_t[3])),
+        3: _add(_d1(sigma_t[3]), _sc(_w11(sigma_t[2],sigma_t[3]),2)),
+    }
+
+    # 7. Extract C_ij and E_ij using FRAME-component inner products
+    # Key: use frame vectors to project 2-forms to frame indices.
+    # Z^i_{ab} = sum_{mu<nu} (legs[a][mu]*legs[b][nu] - legs[a][nu]*legs[b][mu]) * Z^i_{mu nu} / 2
+    # But antisymmetry: just legs[a][mu]*legs[b][nu]*Z^i_{mu nu} summed over all mu,nu.
+    H_up = {(0,1):-1,(1,0):-1,(2,3):1,(3,2):1}  # frame metric H^{ab}
+
+    def _frame_inner(F_coord, G_coord):
+        """
+        <F,G>_frame = sum_{a<b,c<d} (H^{ac}H^{bd}-H^{ad}H^{bc}) F_ab^frame G_cd^frame
+        where F_ab^frame = sum_{mu,nu} legs[a][mu]*legs[b][nu]*F_{mu nu}
+        """
+        result = sp.S.Zero
+        for a in range(n):
+            for b in range(a+1,n):
+                # F_{ab}^frame = sum_{mu,nu} legs[a][mu]*legs[b][nu]*F_{mu nu}
+                Fab = _s(sum(legs[a][mu]*legs[b][nu]*F_coord.get((mu,nu),sp.S.Zero)
+                             for mu in range(n) for nu in range(n) if mu<nu)
+                         - sum(legs[a][nu]*legs[b][mu]*F_coord.get((mu,nu),sp.S.Zero)
+                               for mu in range(n) for nu in range(n) if mu<nu))
+                # = 2 * sum_{mu<nu} legs[a][mu]*legs[b][nu]*F_{mu nu}  (antisym)
+                if Fab == 0: continue
+                for c in range(n):
+                    for d in range(c+1,n):
+                        Gcd = _s(sum(legs[c][mu]*legs[d][nu]*G_coord.get((mu,nu),sp.S.Zero)
+                                     for mu in range(n) for nu in range(n) if mu<nu)
+                                 - sum(legs[c][nu]*legs[d][mu]*G_coord.get((mu,nu),sp.S.Zero)
+                                       for mu in range(n) for nu in range(n) if mu<nu))
+                        if Gcd == 0: continue
+                        h1 = H_up.get((a,c),0)*H_up.get((b,d),0)
+                        h2 = H_up.get((a,d),0)*H_up.get((b,c),0)
+                        fac = h1-h2
+                        if fac: result += Fab*fac*Gcd
+        return _s(result)
+
+    # GramZZ in frame components — should be constant [[0,0,1/4],[0,-1/2,0],[1/4,0,0]]
+    GramZZ = sp.Matrix(3,3, lambda i,j: _s(_frame_inner(Z[i+1],Z[j+1])))
+    GramZZinv = GramZZ.inv()
+
+    def _extract(Sig_in):
+        mat = sp.zeros(3,3)
+        for i in [1,2,3]:
+            b_vec = sp.Matrix([_s(_frame_inner(Sig_in[i], Z[k+1])) for k in range(3)])
+            c = GramZZinv * b_vec
+            for j in range(3):
+                mat[i-1,j] = _s(c[j])
+        return mat
+
+    Cmat = _extract(Sig)
+    Emat = _extract(Sig_t)
+
+    # 8. PSI, PHI, LAMBD
+    # C_extracted[i,j] = Psi_true[i,j] + R/6*gamma[i,j]
+    # gamma=[[0,0,1/2],[0,-1/4,0],[1/2,0,0]] => LAMBD=(C[0,2]-C[1,1])/3, Psi2=C[1,1]+LAMBD
+    LAMBD = _s((Cmat[0,2] - Cmat[1,1]) / 3)
+    PSI = [_s(Cmat[0,0]),
+           _s(Cmat[0,1]),
+           _s(Cmat[1,1] + LAMBD),
+           _s(Cmat[1,2]),
+           _s(Cmat[2,2])]
+
+    # PHI_PICK = -E  (sign: PICK (-,+,+,+) vs MH (+,-,-,-))
+    PHI = [_s(-Emat[0,0]), _s(-Emat[0,1]), _s(-Emat[0,2]),
+           _s(-Emat[1,1]), _s(-Emat[1,2]), _s(-Emat[2,2])]
+
+    return PSI, PHI, LAMBD
+
 def weyl_spinor_from_coframe(C: dict, gi: Matrix, l, nv, m, mb,
                               n_dim: int, simp_fn=None) -> list:
     C_up = _raise_all(C, gi, n_dim, 4)
@@ -1586,6 +1800,7 @@ class KarlhedeClassifier:
                  null_coframe=None, orthonormal_coframe=None,
                  contravariant=False, signature=None, tetrad_type='auto',
                  simplify_fn=None, max_order=7, verbose=True,
+                 use_frame_curvature=False,
                  suls=None, inverse_metric=None,
 ):
         self.g                   = metric
@@ -1600,6 +1815,7 @@ class KarlhedeClassifier:
         self.simp                = simplify_fn
         self.max_order           = max_order
         self.verbose             = verbose
+        self.use_frame_curvature = use_frame_curvature
         self.n                   = len(coords)
 
     def _log(self, msg):
@@ -1723,11 +1939,23 @@ class KarlhedeClassifier:
                 l, nv, m, mb = null_coframe_from_diagonal_metric(
                     g, sig, self.tetrad_type, simp)
 
-        PSI = weyl_spinor_from_coframe(C, gi, l, nv, m, mb, n, simp)
-        # PHI uses the TRACE-FREE Ricci S, not the full Ric
-        PHI = ricci_spinor_from_coframe(S, gi, l, nv, m, mb, n, simp)
-        PSI = [self._s(p) for p in PSI]
-        PHI = [self._s(p) for p in PHI]
+        if self.use_frame_curvature:
+            # Frame-curvature route: no coordinate Riemann tensor.
+            # Coframe must be clean (Abs-free); pre-apply simp.
+            _s_fn = simp if simp is not None else sp.cancel
+            _cf = [[_s_fn(c) for c in row]
+                   for row in [list(l), list(nv), list(m), list(mb)]]
+            PSI, PHI, LAMBD = frame_curvature_from_coframe(
+                _cf, coords, gi=gi, simp_fn=_s_fn, n=n)
+            PSI   = [self._s(p) for p in PSI]
+            PHI   = [self._s(p) for p in PHI]
+            LAMBD = self._s(LAMBD)
+        else:
+            PSI = weyl_spinor_from_coframe(C, gi, l, nv, m, mb, n, simp)
+            # PHI uses the TRACE-FREE Ricci S, not the full Ric
+            PHI = ricci_spinor_from_coframe(S, gi, l, nv, m, mb, n, simp)
+            PSI = [self._s(p) for p in PSI]
+            PHI = [self._s(p) for p in PHI]
 
         log(f"  PSI = {PSI}")
         log(f"  PHI = {PHI}")

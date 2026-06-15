@@ -469,3 +469,54 @@ order 0. Prototype: prototypes/bivector_prototype_v4.py (= /tmp/biv4.py).
 5. Run ki/kiva/petrme through the order-0 frame path; confirm NO dense blowup,
    expect ki→00D r=4 t=111 H=ess, kiva→ebb.
 6. Then (separate, option-a): order-≥1 spinor derivatives (MacCallum-Åman V^nR).
+
+## PRODUCTION WIRING COMPLETE (Sonnet session, 2026-06-14)
+
+### What was built
+
+`frame_curvature_from_coframe(coframe, coords, gi=None, simp_fn=None, n=4)`
+inserted into `karlhede.py` just before `weyl_spinor_from_coframe`. Produces
+`(PSI, PHI, LAMBD)` in exact PICK format, drop-in for the old three-step path.
+
+`KarlhedeClassifier.__init__` gains `use_frame_curvature=False` flag. When
+True, the classify() curvature block uses the bivector route instead of the
+coordinate Christoffel → Riemann → Weyl pipeline.
+
+`metrics.py` changes (minimal, tighten symbol assumptions only):
+- `try2`: `T, X, Y, Z = symbols('T X Y Z', positive=True)` (was `real=True`)
+  Required because `T^C` is only real when `T > 0`; without this the Lorentzian
+  reality check failed and `conjugate(sqrt(exp(T^C)))` didn't simplify.
+- `minkow`: `r = symbols('r', positive=True)` added after the real declaration.
+  Avoids `Abs(r)` in frame vectors; matches the comment already in schwar.
+
+### Validation path taken
+
+11/11 PICK metrics cross-validated standalone (frame path vs coordinate path,
+exact component equality after simp):
+  schwar, desitt, renord, einuni, friedc, try2, szek1, berob3, cylema, cylemb,
+  minkow.  All PSI, PHI, LAMBD components agree exactly.
+KarlhedeClassifier smoke test: schwar both paths → Petrov D, PSI=[0,0,-M/r³,0,0].
+
+### Key technical fixes found during productionization
+
+1. GramZZ must use FRAME-component inner product (project Z^i with legs first,
+   then apply constant frame metric H^{ab}). Using coordinate-component inner
+   product with H^{ab} in coordinate slots gives metric-dependent denominators
+   that don't cancel. GramZZ in frame components = [[0,0,1/4],[0,-1/2,0],[1/4,0,0]].
+
+2. Lorentzian reality check must use `.is_real` first (handles positive-symbol
+   sqrt/exp expressions), fall back to `_simp(sp.im(c), simp_fn) == 0`.
+   Raw `_s(sp.im(c)) == 0` fails for `sqrt(exp(T^C))` when T is `real` not
+   `positive` — sympy can't simplify `im(sqrt(exp(T^C)))` to 0 symbolically.
+
+3. PHI sign: PHI_PICK = -E  (PICK uses (-,+,+,+), MH uses (+,-,-,-)).
+
+4. LAMBD from C matrix: LAMBD = (C[0,2] - C[1,1]) / 3; true Ψ₂ = C[1,1] + LAMBD.
+   Derives from MH eq19 gamma_ij = [[0,0,1/2],[0,-1/4,0],[1/2,0,0]]:
+   C_extracted[0,2] = Ψ₂ + R/12, C_extracted[1,1] = Ψ₂ - R/24.
+
+### Gate before merging to main use
+- Sage 56-check regression must pass (run_checks() in test_sage_backend.py)
+- ki (Kinnersley NUT) with use_frame_curvature=True must classify without OOM,
+  expected: 00D r=4 t=111 H=ess
+- kiva expected: H=ebb
